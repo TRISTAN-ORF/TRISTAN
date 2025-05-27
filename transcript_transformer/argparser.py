@@ -517,7 +517,8 @@ class Parser(argparse.ArgumentParser):
 
         # determine presence of ribo samples
         args.use_ribo = (
-            "ribo_paths" in args
+            self.tool == "ribotie"
+            and "ribo_paths" in args
             and isinstance(args.ribo_paths, dict)
             and bool(args.ribo_paths)
         )
@@ -640,10 +641,10 @@ class Parser(argparse.ArgumentParser):
             file = f"{args.out_prefix}_params.yml"
             # args.model takes precedence over args.trained_model or default output model
             if args.model is not None:
-                model_path = files("transcript_transformer.pretrained.tt_models")
-                args.model_dir = os.fspath(cast(os.PathLike, model_path))
-                model_config = args.model_dir.joinpath(TT_DICT[args.model])
-                args = load_args(os.fspath(model_config), args)
+                path_str = "transcript_transformer.pretrained.tt_models"
+                args.model_dir = os.fspath(cast(os.PathLike, files(path_str)))
+                model_config = files(path_str).joinpath(TT_DICT[args.model])
+                args = load_args(os.fspath(cast(os.PathLike, model_config)), args)
             # If output model exists and no other model is listed
             elif os.path.isfile(file) and ("trained_model" not in args):
                 args = load_args(file, args)

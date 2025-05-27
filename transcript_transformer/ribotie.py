@@ -45,7 +45,7 @@ def parse_args():
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args()
-    default_config = files("transcript_transformer.configs").joinpath("defaults.tt.yml")
+    default_config = files("transcript_transformer.configs").joinpath("defaults.rt.yml")
     default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:

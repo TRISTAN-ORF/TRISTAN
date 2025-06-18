@@ -344,6 +344,8 @@ def construct_output_table(
             pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float32)),
         )
         out_headers = tool_headers + STANDARD_OUT_HEADERS + xtr_heads
+    if return_ORF_coords:
+        out_headers += ["ORF_coords"]
 
     prtime(f"Parsing ORF information...", "\t")
     df = df.with_columns(
@@ -593,8 +595,10 @@ def construct_output_table(
         df_out = pl.DataFrame(out_dicts).rename(RENAME_HEADERS)
         df_out.write_csv(f"{out_prefix}.redundant.csv")
         df_out.write_csv(f"{out_prefix}.csv")
+        df_out.write_csv(f"{out_prefix}.novel.csv")
         print(f"\t !-> The positive set is empty!")
-        return df_out, df_out
+        return df_out, df_out, df_out
+
     # detect ORF biotypes, evaluate whether transcript biotype is given
     prtime("Parsing ORF type information...", "\t")
     if "transcript_biotype" in df.columns:
@@ -714,7 +718,6 @@ def construct_output_table(
         df = df.with_columns(
             ORF_coords=pl.col("ORF_coords").cast(pl.List(pl.String)).list.join(";")
         )
-        out_headers += ["ORF_coords"]
 
     # --- Filter CDS variants and custom filters ---
     # Custom filters
@@ -730,22 +733,27 @@ def construct_output_table(
         df_filt = filter_CDS_variants(df)
     else:
         df_filt = df
+    df_novel = df_filt.filter(pl.col("ORF_type") != "annotated CDS")
 
     # --- Save to csv ---
-    for df_, label in zip([df, df_filt], [".redundant", ""]):
-        df_ = (
-            df_.with_columns(
-                (
-                    pl.col(f"{prefix}score").rank(method="ordinal", descending=True)
-                ).alias(f"{prefix}rank")
-            )
-            .select(out_headers)
-            .sort(f"{prefix}rank")
-            .rename(RENAME_HEADERS)
-        )
-        df_.write_csv(f"{out_prefix}{label}.csv", float_precision=4)
+    for df_, label in zip([df, df_filt, df_novel], [".redundant", "", ".novel"]):
+        save_output_table(df_, out_prefix, label, prefix, out_headers)
 
-    return df, df_filt
+    return df, df_filt, df_novel
+
+
+def save_output_table(df, out_prefix, label, prefix, out_headers):
+    df = (
+        df.with_columns(
+            (pl.col(f"{prefix}score").rank(method="ordinal", descending=True)).alias(
+                f"{prefix}rank"
+            )
+        )
+        .select(out_headers)
+        .sort(f"{prefix}rank")
+        .rename(RENAME_HEADERS)
+    )
+    df.write_csv(f"{out_prefix}{label}.csv", float_precision=4)
 
 
 def filter_CDS_variants(df):
@@ -882,12 +890,9 @@ def create_multiqc_reports(df, out_prefix, id, name):
     return
 
 
-def csv_to_gtf(h5_path, df, out_prefix, caller, exclude_annotated=False):
+def csv_to_gtf(h5_path, df, out_prefix, caller):
     """convert results table to GTF"""
-    if exclude_annotated:
-        df = df.filter(pl.col("ORF_type") != "annotated CDS")
-    df = df.fill_null("NA")
-    df = df.sort("transcript_id")
+    df = df.fill_null("NA").sort("transcript_id").cast({"seqname": pl.String})
     f = h5py.File(h5_path, "r")
     f_ids = np.array(f["transcript/transcript_id"])
     # fast id mapping
@@ -950,7 +955,7 @@ def csv_to_gtf(h5_path, df, out_prefix, caller, exclude_annotated=False):
         for start, stop, exon, feature in gff_parts[i]:
             property_list = [
                 f'gene_id "{row["gene_id"]}',
-                f'transcript_id "{row["ORF_id"]}',
+                f'transcript_id "{row["transcript_id"]}',
                 f'gene_name "{row["gene_name"]}',
                 # f'transcript_biotype "{row["transcript_biotype"]}',
                 # f'tag "{row["tag"]}',

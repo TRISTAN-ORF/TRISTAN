@@ -155,7 +155,7 @@ def main():
             integrate_seq_predictions(args.backup_path, aligned_pred_list)
 
     # --- Result Processing ---
-    df, df_filt = construct_output_table(
+    df, df_filt, df_novel = construct_output_table(
         h5_path=args.h5_path,
         out_prefix=args.out_prefix,
         prob_cutoff=args.prob_cutoff,
@@ -171,10 +171,16 @@ def main():
         os.makedirs(multiqc_path, exist_ok=True)
         for df, name, path in zip([df, df_filt], names, paths):
             csv_to_gtf(
-                args.h5_path, df, path, "TIS_Transformer", args.exclude_annotated
+                args.h5_path,
+                df,
+                path,
+                "TIS_Transformer",
             )
             out = os.path.join(multiqc_path, os.path.basename(path))
             create_multiqc_reports(df, out, "tis_transformer", name)
+        csv_to_gtf(
+            args.h5_path, df_novel, args.out_prefix + ".novel", "TIS_Transformer"
+        )
 
 
 def align_to_h5_ids(h5_path, tr_ids, data_list, dtype=np.float32):

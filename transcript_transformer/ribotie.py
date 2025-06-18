@@ -139,12 +139,12 @@ def main():
             "patience": 1,
             "lr": 0.0008,
         }
-        with open(f"{args.out_prefix}_pretrain_params.yml", "w+") as file_handle:
+        with open(f"{args.out_prefix}_pretrain_params.rt.yml", "w+") as file_handle:
             yaml.dump(save_dict, file_handle, default_flow_style=False)
     elif not args.missing_models:
         prtime("Pretraining model: training models on collection of all samples", "\n")
         print(
-            f"\t -- Found '{args.out_prefix}_params.yml', Skipping RiboTIE pre-training step",
+            f"\t -- Found '{args.out_prefix}_params.rt.yml', Skipping RiboTIE pre-training step",
         )
 
     # --- Fine-tuning Or Prediction ---
@@ -156,7 +156,7 @@ def main():
             args_set.grouped_ribo_ids = {group: ribo_ids}
             args_set.cond["grouped"] = {group: args.cond["grouped"][group]}
 
-            model_file = f"{args.out_prefix}_{group}_params.yml"
+            model_file = f"{args.out_prefix}_{group}_params.rt.yml"
             result_file = f"{args.out_prefix}_{group}.npy"
             has_model_output = os.path.isfile(result_file)
             has_model_file = os.path.isfile(model_file)
@@ -206,7 +206,7 @@ def main():
                     trainer, model = train(
                         args_set, test_model=False, enable_model_summary=False
                     )
-                    mv_ckpt_to_out_dir(trainer, args_set.out_prefix)
+                    mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.rt")
                     # set output path
                     rel_path = os.path.basename(args_set.out_prefix)
                     args.folds[i]["transfer_checkpoint"] = f"{rel_path}.rt.ckpt"
@@ -218,6 +218,7 @@ def main():
                     predict(args_set, postprocess=False)
             prtime(f"Merging predictions to '{args.out_prefix}_{group}.npy'...", "\n")
             merge_outputs(f"{args.out_prefix}_{group}", folds.keys())
+            [os.remove(f"{args.out_prefix}_{group}_f{i}.npy") for i in folds.keys()]
             # Save params file
             if finetune:
                 args.folds[0]["test"] = []
@@ -226,7 +227,9 @@ def main():
                     "patience": 1,
                     "lr": 0.0008,
                 }
-                with open(f"{args.out_prefix}_{group}_params.yml", "w+") as file_handle:
+                with open(
+                    f"{args.out_prefix}_{group}_params.rt.yml", "w+"
+                ) as file_handle:
                     yaml.dump(save_dict, file_handle, default_flow_style=False)
 
     if args.pretrain:
@@ -236,7 +239,7 @@ def main():
     for output in output_sets:
         out = np.load(f"{args.out_prefix}_{output}.npy", allow_pickle=True)
         out_prefix = f"{args.out_prefix}_{output}"
-        df, df_filt = construct_output_table(
+        df, df_filt, df_novel = construct_output_table(
             h5_path=args.h5_path,
             out_prefix=out_prefix,
             prob_cutoff=args.prob_cutoff,
@@ -258,9 +261,10 @@ def main():
             multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
             os.makedirs(multiqc_path, exist_ok=True)
             for df, id, name, path in zip([df, df_filt], ids, names, paths):
-                csv_to_gtf(args.h5_path, df, path, "RiboTIE", args.exclude_annotated)
+                csv_to_gtf(args.h5_path, df, path, "RiboTIE")
                 out = os.path.join(multiqc_path, os.path.basename(path))
                 create_multiqc_reports(df, out, id, name)
+            csv_to_gtf(args.h5_path, df_novel, out_prefix + ".novel", "RiboTIE")
         else:
             print("No positive predictions found")
 
@@ -271,7 +275,7 @@ def main():
                 Do not use the pre-trained predictions as is.
                 RiboTIE is meant to fine-tune on individual samples after pre-training.
                 Run RiboTIE without the --pretrain flag and with newly created yml file, e.g.,
-                'ribotie {' '.join(args.conf)} {args.out_prefix}_pretrain_params.yml'.
+                'ribotie {' '.join(args.conf)} {args.out_prefix}_pretrain_params.rt.yml'.
                 !!!
                 """
             )

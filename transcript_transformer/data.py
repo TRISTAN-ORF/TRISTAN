@@ -131,6 +131,11 @@ def process_ribo_data(
                 print(f"\t -- Saving data to {path}...")
                 f = h5py.File(path, "w")
                 f.create_group("transcript")
+                # Save tr_ids in parallel h5 files
+                max_char_len = tr_ids.str.len_chars().max()
+                f["transcript"].create_dataset(
+                    "transcript_id", data=tr_ids, dtype=f"<S{max_char_len}"
+                )
             if "riboseq" not in f["transcript"].keys():
                 f["transcript"].create_group("riboseq")
             if sample_id in f["transcript/riboseq"].keys():

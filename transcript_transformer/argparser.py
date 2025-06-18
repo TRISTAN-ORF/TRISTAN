@@ -158,11 +158,6 @@ class Parser(argparse.ArgumentParser):
             help="Don't remove duplicate ORFs resulting from the correction step.",
         )
         pr_parse.add_argument(
-            "--exclude_annotated",
-            action="store_true",
-            help="Exclude annotated CDS regions in generated GTF file containing predicted translated ORFs.",
-        )
-        pr_parse.add_argument(
             "--return_ORF_coords",
             action="store_true",
             help="Include full exon coordinates of predicted CDSs to result table (these are always present in GTF file).",

@@ -5,6 +5,7 @@ import pandas as pd
 import polars as pl
 from scipy.stats import entropy
 from scipy.sparse import csr_matrix
+from pdb import set_trace
 from transcript_transformer import (
     RIBOTIE_MQC_HEADER,
     START_CODON_MQC_HEADER,
@@ -618,7 +619,7 @@ def construct_output_table(
             )
             .when(pl.col("canonical_TTS_idx") < pl.col("TIS_idx"))
             .then(pl.lit("dORF"))
-            .when(pl.col("canonical_TIS_idx") > pl.col("TTS_idx"))
+            .when(pl.col("canonical_TIS_idx") >= pl.col("TTS_idx"))
             .then(pl.lit("uORF"))
             .when(pl.col("canonical_TIS_idx") > pl.col("TIS_idx"))
             .then(
@@ -891,103 +892,98 @@ def create_multiqc_reports(df, out_prefix, id, name):
 
 
 def csv_to_gtf(h5_path, df, out_prefix, caller):
-    """convert results table to GTF"""
+    """
+    Converts a DataFrame of ORF predictions into a GTF file.
+    !!! Creates a unique transcript entry for each ORF to ensure GTF compatibility. !!!
+    """
     df = df.fill_null("NA").sort("transcript_id").cast({"seqname": pl.String})
-    f = h5py.File(h5_path, "r")
-    f_ids = np.array(f["transcript/transcript_id"])
-    # fast id mapping
-    xsorted = np.argsort(f_ids)
-    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["transcript_id"])]
-    # obtain exons
-    exons_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
-    tr_ids = f_ids[pred_to_h5_args]
-    f.close()
-    gff_parts = []
-    for TIS, LTS, TTS, strand, exon_coord, tr_id in zip(
-        df["TIS_coord"],
-        df["LTS_coord"],
-        df["TTS_coord"],
-        df["strand"],
-        exons_coords,
-        tr_ids,
-    ):
-        check_genomic_order(exon_coord, strand)
-        start_codon_stop = find_distant_exon_coord(TIS, 2, strand, exon_coord)
-        start_parts, start_exons = transcript_region_to_exons(
-            TIS, start_codon_stop, strand, exon_coord
+
+    # Create a lookup map for original transcript_id to exon coordinates for efficiency.
+    with h5py.File(h5_path, "r") as f:
+        h5_ids = np.array(f["transcript/transcript_id"], dtype=str)
+        h5_exons = np.array(f["transcript/exon_coords"])
+        tr_id_to_exon_coords = dict(zip(h5_ids, h5_exons))
+
+    gtf_lines = []
+
+    # Iterate through each ORF (row) to create a separate transcript entry.
+    for orf in df.iter_rows(named=True):
+        original_transcript_id = orf["transcript_id"]
+        exon_coord = tr_id_to_exon_coords.get(original_transcript_id)
+
+        if exon_coord is None:
+            # Optionally, log or handle cases where exon coordinates are not found.
+            continue
+
+        check_genomic_order(exon_coord, orf["strand"])
+
+        # Use ORF_id as the new transcript_id for GTF compatibility.
+        dummy_transcript_id = orf["ORF_id"]
+
+        # --- Define base attributes for this new dummy transcript ---
+        base_attrs = {
+            "gene_id": orf["gene_id"],
+            "transcript_id": dummy_transcript_id,
+            "gene_name": orf["gene_name"],
+        }
+
+        # --- 1. Generate the 'transcript' feature line ---
+        if orf["strand"] == "+":
+            tr_start, tr_stop = exon_coord[0], exon_coord[-1]
+        else:
+            tr_start, tr_stop = exon_coord[-2], exon_coord[1]
+
+        attr_str = "; ".join([f'{k} "{v}"' for k, v in base_attrs.items()]) + ";"
+        gtf_lines.append(
+            f'{orf["seqname"]}\t{caller}\ttranscript\t{tr_start}\t{tr_stop}\t.\t{orf["strand"]}\t.\t{attr_str}\n'
         )
-        # acquire cds stop coord from stop codon coord.
+
+        # --- 2. Generate 'exon' feature lines for the transcript ---
+        exons = exon_coord.reshape(-1, 2)
+        for i, (exon_start, exon_stop) in enumerate(exons):
+            exon_attrs = base_attrs | {"exon_number": i + 1}
+            attr_str = "; ".join([f'{k} "{v}"' for k, v in exon_attrs.items()]) + ";"
+            gtf_lines.append(
+                f'{orf["seqname"]}\t{caller}\texon\t{exon_start}\t{exon_stop}\t.\t{orf["strand"]}\t.\t{attr_str}\n'
+            )
+
+        # --- 3. Generate feature lines for this specific ORF ---
+        TIS, LTS, TTS, strand = (
+            orf["TIS_coord"],
+            orf["LTS_coord"],
+            orf["TTS_coord"],
+            orf["strand"],
+        )
+
+        orf_fields = ["ORF_id", "ORF_type", "ribotie_score", "tis_transformer_score"]
+        orf_attrs = {k: orf[k] for k in orf_fields if k in orf and orf[k] != "NA"}
+
+        feature_definitions = []
+        if TIS is not None:
+            start_codon_stop = find_distant_exon_coord(TIS, 2, strand, exon_coord)
+            feature_definitions.append(("start_codon", TIS, start_codon_stop))
+        feature_definitions.append(("CDS", TIS, LTS))
         if TTS != -1:
             stop_codon_stop = find_distant_exon_coord(TTS, 2, strand, exon_coord)
-            stop_parts, stop_exons = transcript_region_to_exons(
-                TTS, stop_codon_stop, strand, exon_coord
-            )
-        cds_parts, cds_exons = transcript_region_to_exons(TIS, LTS, strand, exon_coord)
-        if strand == "+":
-            tr_coord = np.array([exon_coord[0], exon_coord[-1]])
-        else:
-            tr_coord = np.array([exon_coord[-2], exon_coord[1]])
-        exons = np.arange(1, len(exon_coord) // 2 + 1, dtype=int)
+            feature_definitions.append(("stop_codon", TTS, stop_codon_stop))
 
-        coords_packed = [
-            tr_coord.reshape(-1, 2),
-            exon_coord.reshape(-1, 2),
-            np.array(start_parts).reshape(-1, 2),
-            np.array(cds_parts).reshape(-1, 2),
-        ]
-        features_packed = [
-            np.full(1, "transcript"),
-            np.full(len(exons), "exon"),
-            np.full(len(start_exons), "start_codon"),
-            np.full(len(cds_exons), "CDS"),
-        ]
-        exons_packed = [[-1], exons, start_exons, cds_exons]
-        if TTS != -1:
-            coords_packed.append(np.array(stop_parts).reshape(-1, 2))
-            features_packed.append(np.full(len(stop_exons), "stop_codon"))
-            exons_packed.append(stop_exons)
-        coords_packed = np.vstack(coords_packed).astype(int)
-        features_packed = np.hstack(features_packed).reshape(-1, 1)
-        exons_packed = np.hstack(exons_packed).reshape(-1, 1)
-        gff_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
-    gtf_lines = []
-    for i, row in enumerate(df.iter_rows(named=True)):
-        for start, stop, exon, feature in gff_parts[i]:
-            property_list = [
-                f'gene_id "{row["gene_id"]}',
-                f'transcript_id "{row["transcript_id"]}',
-                f'gene_name "{row["gene_name"]}',
-                # f'transcript_biotype "{row["transcript_biotype"]}',
-                # f'tag "{row["tag"]}',
-                # f'transcript_support_level "{row["tr_support_lvl"]}',
-            ]
-            if feature not in ["transcript"]:
-                property_list.insert(
-                    3,
-                    f'exon_number "{int(exon)}',
-                )
-            if feature not in ["transcript", "exon"]:
-                entries = np.array(
-                    ["ORF_id", "ORF_type", "ribotie_score", "tis_transformer_score"]
-                )
-                entries = entries[np.isin(entries, df.columns)]
-                property_list.insert(3, "; ".join([f'{a} "{row[a]}"' for a in entries]))
-            properties = '"; '.join(property_list)
-            gtf_lines.append(
-                "\t".join(
-                    [
-                        row["seqname"],
-                        caller,
-                        feature,
-                        start,
-                        stop,
-                        ".",
-                        row["strand"],
-                        "0",
-                        properties + '";\n',
-                    ]
-                )
+        for feature_type, start_coord, stop_coord in feature_definitions:
+            if start_coord is None or stop_coord is None:
+                continue
+
+            parts, part_exons = transcript_region_to_exons(
+                start_coord, stop_coord, strand, exon_coord
             )
+
+            for i, (part_start, part_stop) in enumerate(np.array(parts).reshape(-1, 2)):
+                feature_attrs = base_attrs | orf_attrs | {"exon_number": part_exons[i]}
+                attr_str = (
+                    "; ".join([f'{k} "{v}"' for k, v in feature_attrs.items()]) + ";"
+                )
+                gtf_lines.append(
+                    f'{orf["seqname"]}\t{caller}\t{feature_type}\t{part_start}\t{part_stop}\t.\t{strand}\t.\t{attr_str}\n'
+                )
+
+    # --- Write all generated lines to the output GTF file ---
     with open(f"{out_prefix}.gtf", "w") as f:
-        for line in gtf_lines:
-            f.write(line)
+        f.writelines(gtf_lines)

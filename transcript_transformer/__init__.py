@@ -230,8 +230,8 @@ RIBO_OUT_HEADERS = [
 
 # --- PRETRAINED MODELS ---
 TT_DICT = {
-    "human" : "Homo_sapiens.GRCh38.113_params.tt.yml",
-    "mouse" : ""
+    "human": "Homo_sapiens.GRCh38.113_params.tt.yml",
+    "mouse": "Mus_musculus.GRCm39.112_params.tt.yml",
 }
 
 # --- MultiQC VARIABLES ---

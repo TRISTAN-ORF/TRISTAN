@@ -1,6 +1,7 @@
 <div align="center">
-<h1>TRISTAN: TRanslational Identification Suite using Transformer Networks for ANalysis</h1> 
+<h1>TRISTAN</h1> 
 
+*Driving coding sequence discovery since 2023*
 Deep learning utility functions for processing and annotating transcript genome data.
 
 [![PyPi Version](https://img.shields.io/pypi/v/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
@@ -10,7 +11,7 @@ Deep learning utility functions for processing and annotating transcript genome 
 [![Documentation Status](https://readthedocs.org/projects/tristan-orf/badge/?version=latest)](https://tristan-orf.readthedocs.io/en/latest/?badge=latest)
 </div>
 
-**TRISTAN** is a suite of tools for detecting translated Open Reading Frames (ORFs) in organisms through the analysis of sequence context and/or ribosome profiling (Ribo-seq) data.
+**TRISTAN** (TRanslational Identification Suite using Transformer Networks for ANalysis) is a suite of tools for detecting translated Open Reading Frames (ORFs) in organisms through the analysis of sequence context and/or ribosome profiling (Ribo-seq) data.
 
 ---
 

@@ -2,7 +2,6 @@
 <h1>TRISTAN</h1> 
 
 *Driving coding sequence discovery since 2023*
-Deep learning utility functions for processing and annotating transcript genome data.
 
 [![PyPi Version](https://img.shields.io/pypi/v/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
 [![GitHub license](https://img.shields.io/github/license/TRISTAN-ORF/transcript_transformer)](https://github.com/TRISTAN-ORF/transcript_transformer/blob/main/LICENSE.md)

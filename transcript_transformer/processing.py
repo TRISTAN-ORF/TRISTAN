@@ -803,41 +803,30 @@ def filter_CDS_variants(df):
 
 
 def process_seq_preds(ids, preds, seqs, min_prob):
-    df = pd.DataFrame(
-        columns=[
-            "transcript_id",
-            "transcript_len",
-            "TIS_pos",
-            "output",
-            "start_codon",
-            "TTS_pos",
-            "stop_codon",
-            "TTS_on_transcript",
-            "prot_len",
-            "prot_seq",
-        ]
-    )
-    num = 0
+    # Find indices above min_prob for each prediction
     mask = [np.where(pred > min_prob)[0] for pred in preds]
+
+    rows = []
     for i, idxs in enumerate(mask):
         tr = seqs[i]
         for idx in idxs:
             prot_seq, has_stop, stop_codon = construct_prot(tr[idx:])
             TTS_pos = idx + len(prot_seq) * 3
-            df.loc[num] = [
-                ids[i][0],
-                len(tr),
-                idx + 1,
-                preds[i][idx],
-                tr[idx : idx + 3],
-                TTS_pos,
-                stop_codon,
-                has_stop,
-                len(prot_seq),
-                prot_seq,
-            ]
-            num += 1
-    return df
+            rows.append(
+                {
+                    "transcript_id": ids[i][0],
+                    "transcript_len": len(tr),
+                    "TIS_pos": idx + 1,
+                    "output": preds[i][idx],
+                    "start_codon": tr[idx : idx + 3],
+                    "TTS_pos": TTS_pos,
+                    "stop_codon": stop_codon,
+                    "TTS_on_transcript": has_stop,
+                    "prot_len": len(prot_seq),
+                    "prot_seq": prot_seq,
+                }
+            )
+    return pl.DataFrame(rows)
 
 
 def create_multiqc_reports(df, out_prefix, id, name):

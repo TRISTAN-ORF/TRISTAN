@@ -20,7 +20,7 @@ class Parser(argparse.ArgumentParser):
         self.add_argument(
             "conf",
             nargs="*",
-            help="paths to YAML or JSON formatted arguments",
+            help="Paths to YAML or JSON formatted arguments.",
         )
         if stage == "train":
             self.add_misc_args()
@@ -30,22 +30,22 @@ class Parser(argparse.ArgumentParser):
         run_parse.add_argument(
             "--data",
             action="store_true",
-            help="only perform loading of data into hdf5 databases",
+            help="Only perform loading of data into hdf5 databases.",
         )
         run_parse.add_argument(
             "--overwrite_data",
             action="store_true",
-            help="overwrite databases if already previously created",
+            help="Overwrite databases if already previously created.",
         )
         run_parse.add_argument(
             "--overwrite_models",
             action="store_true",
-            help="overwrite trained models if already present.",
+            help="Overwrite trained models if already present.",
         )
         run_parse.add_argument(
             "--overwrite_preds",
             action="store_true",
-            help="overwrite model predictions if already present.",
+            help="Overwrite model predictions if already present.",
         )
 
         return run_parse
@@ -56,67 +56,62 @@ class Parser(argparse.ArgumentParser):
             "--gtf_path", type=str, help="(Required) path to assembly gtf file."
         )
         input_parse.add_argument(
-            "--fa_path", type=str, help="(Required) path to assembly reference sequence"
+            "--fa_path",
+            type=str,
+            help="(Required) path to assembly reference sequence.",
         )
         input_parse.add_argument(
             "--h5_path",
             type=str,
-            help="(Required) path used for generating hdf5 file",
+            help="(Required) path used for generating hdf5 file.",
         )
         input_parse.add_argument(
             "--ribo_paths",
             type=json.loads,
-            help="dictionary containing ribosome sample ID's and path to reads mapped to transcriptome (.bam)."
+            help="Dictionary containing ribosome sample ID's and path to reads mapped to transcriptome (.bam)."
             " recommended to define in config file",
         )
         input_parse.add_argument(
             "--samples",
             type=str,
             nargs="+",
-            help="samples to process. These have to be listed in 'ribo_paths'. Allows merging of reads of  "
+            help="Samples to process. These have to be listed in 'ribo_paths'. Allows merging of reads of  "
             "multiple samples. --samples can also be used to process part of your "
-            "database, e.g., in combination with running --parallel",
-        )
-        input_parse.add_argument(
-            "--cond",
-            type=json.loads,
-            help="remove transcripts from training based on transcript properties. This does not affect "
-            "transcripts in validation/test sets. Currently only supports number of mapped riboseq reads "
-            "property. Can filter per dataset. See template.yml file for more examples",
+            "database, e.g., in combination with running --parallel.",
         )
         input_parse.add_argument(
             "--parallel",
             action="store_true",
-            help="create separate hdf5 databases for ribo-seq samples, used when parallalizing "
+            help="Create separate hdf5 databases for ribo-seq samples, used when parallalizing "
             "workflows (e.g., with snakemake). This prevents potential read/write"
-            " problems that arise when multiple separate processes use the same database",
+            " problems that arise when multiple separate processes use the same database.",
         )
         input_parse.add_argument(
             "--no_backup",
             action="store_true",
-            help="Do not create a backup of the processed assembly in the GTF folder location",
+            help="Do not create a backup of the processed assembly in the GTF folder location.",
         )
         input_parse.add_argument(
             "--backup_path",
             type=str,
             default=None,
-            help="path to backup location (defaults to GTF folder location)",
+            help="Path to backup location (defaults to GTF folder location).",
         )
         input_parse.add_argument(
             "--offsets",
             type=json.loads,
-            help="(NOT RECOMMENDED) functionality only exists for benchmarking purposes.",
+            help="(NOT RECOMMENDED) functionality only exists for benchmarking purposes. Probably broken in this version.",
         )
         input_parse.add_argument(
             "--low_memory",
             action="store_true",
-            help="polars setting that trades perfomance for memory-efficiency. use on low-memory devices.",
+            help="Polars setting that trades perfomance for memory-efficiency. use on low-memory devices.",
         )
         input_parse.add_argument(
             "--cores",
             type=int,
             default=6,
-            help="number of processor cores used for data processing",
+            help="Number of processor cores used for data processing",
         )
 
         return input_parse
@@ -126,7 +121,7 @@ class Parser(argparse.ArgumentParser):
         pr_parse.add_argument(
             "--out_prefix",
             type=str,
-            help="output prefix used for all output files, defaults to derivative of 'h5_path'",
+            help="Output prefix used for all output files, defaults to derivative of 'h5_path'.",
         )
         pr_parse.add_argument(
             "--prob_cutoff",
@@ -168,120 +163,122 @@ class Parser(argparse.ArgumentParser):
     def add_comp_args(self):
         comp_parse = self.add_argument_group("Computational resources arguments")
         comp_parse.add_argument(
-            "--num_workers", type=int, default=2, help="number of processor cores"
+            "--num_workers", type=int, default=2, help="Number of processor cores."
         )
         comp_parse.add_argument(
             "--max_memory",
             type=int,
             default=30000,
             help="Value (GPU vRAM) used to bucket batches based on rough estimates. "
-            "Reduce this setting if running out of memory",
+            "Reduce this setting if running out of memory.",
         )
         comp_parse.add_argument(
             "--accelerator",
             type=str,
             default="gpu",
             choices=["cpu", "gpu", "tpu", "ipu", "hpu", "mps", "auto"],
-            help="computational hardware to apply",
+            help="Computational hardware to apply.",
         )
         comp_parse.add_argument(
             "--strategy",
             type=str,
             default="auto",
-            help="strategy for multi-gpu computation",
+            help="Strategy for multi-gpu computation.",
         )
         comp_parse.add_argument(
-            "--devices", type=int, default=1, nargs="+", help="GPU device to use"
+            "--devices", type=int, default=1, nargs="+", help="GPU device to use."
         )
 
         return comp_parse
 
     def add_architecture_args(self):
-        tf_parse = self.add_argument_group("Model architecture arguments")
+        tf_parse = self.add_argument_group(
+            "Model architecture arguments. Not for the weak of heart!"
+        )
         tf_parse.add_argument(
             "--num_tokens",
             type=int,
             default=8,
-            help="number of unique nucleotide input tokens (for sequence input)",
+            help="Number of unique nucleotide input tokens (for sequence input).",
         )
         tf_parse.add_argument(
-            "--dim", type=int, default=30, help="dimension of the hidden states"
+            "--dim", type=int, default=30, help="Dimension of the hidden states."
         )
         tf_parse.add_argument("--depth", type=int, default=6, help="number of layers")
         tf_parse.add_argument(
             "--heads",
             type=int,
             default=6,
-            help="number of attention heads in every layer",
+            help="Number of attention heads in every layer.",
         )
         tf_parse.add_argument(
             "--dim_head",
             type=int,
             default=16,
-            help="dimension of the attention head matrices",
+            help="Dimension of the attention head matrices.",
         )
         tf_parse.add_argument(
             "--nb_features",
             type=int,
             default=80,
-            help="number of random features, if not set, will default to (d * log(d)), "
-            "where d is the dimension of each head",
+            help="Number of random features, if not set, will default to (d * log(d)), "
+            "where d is the dimension of each head.",
         )
         tf_parse.add_argument(
             "--feature_redraw_interval",
             type=int,
             default=1000,
-            help="how frequently to redraw the projection matrix",
+            help="How frequently to redraw the projection matrix.",
         )
         tf_parse.add_argument(
             "--no_generalized_attention",
             action="store_false",
-            help="applies generalized attention functions",
+            help="Applies generalized attention functions.",
         )
         tf_parse.add_argument(
             "--reversible",
             action="store_true",
-            help="reversible layers, from Reformer paper",
+            help="Reversible layers, from Reformer paper.",
         )
         tf_parse.add_argument(
             "--ff_chunks",
             type=int,
             default=1,
-            help="chunk feedforward layer, from Reformer paper",
+            help="Chunk feedforward layer, from Reformer paper.",
         )
         tf_parse.add_argument(
             "--use_scalenorm",
             action="store_true",
-            help="use scale norm, from 'Transformers without Tears' paper",
+            help="Use scale norm, from 'Transformers without Tears' paper.",
         )
         tf_parse.add_argument(
             "--use_rezero",
             action="store_true",
-            help="use rezero, from 'Rezero is all you need' paper",
+            help="Use rezero, from 'Rezero is all you need' paper.",
         )
         tf_parse.add_argument(
-            "--ff_glu", action="store_true", help="use GLU variant for feedforward"
+            "--ff_glu", action="store_true", help="Use GLU variant for feedforward."
         )
         tf_parse.add_argument(
-            "--emb_dropout", type=float, default=0.1, help="embedding dropout"
+            "--emb_dropout", type=float, default=0.1, help="Embedding dropout."
         )
         tf_parse.add_argument(
-            "--ff_dropout", type=float, default=0.1, help="feedforward dropout"
+            "--ff_dropout", type=float, default=0.1, help="Feedforward dropout."
         )
         tf_parse.add_argument(
-            "--attn_dropout", type=float, default=0.1, help="post-attn dropout"
+            "--attn_dropout", type=float, default=0.1, help="Post-attention dropout."
         )
         tf_parse.add_argument(
             "--local_attn_heads",
             type=int,
             default=4,
-            help="the amount of heads used for local attention",
+            help="The amount of heads used for local attention.",
         )
         tf_parse.add_argument(
             "--local_window_size",
             type=int,
             default=256,
-            help="window size of local attention",
+            help="Window size of local attention.",
         )
 
         return tf_parse
@@ -291,7 +288,7 @@ class Parser(argparse.ArgumentParser):
         dl_parse.add_argument(
             "--transfer_checkpoint",
             type=str,
-            help="Path to checkpoint pretrained model",
+            help="Path to checkpoint pretrained model.",
         )
         dl_parse.add_argument(
             "--folds",
@@ -306,7 +303,7 @@ class Parser(argparse.ArgumentParser):
             type=float,
             default=0.2,
             help="Determines the fraction of the training set to be used for "
-            "validation. The remaining fraction is used for training."
+            "validation. The remaining fraction is used for training. "
             "Ignored when using --train, --val or --test, or --folds.",
         )
         dl_parse.add_argument(
@@ -314,66 +311,73 @@ class Parser(argparse.ArgumentParser):
             type=float,
             default=0.2,
             help="Determines the fraction of the full set to be used for "
-            "testing. The remaining fraction is used for training/validation."
+            "testing. The remaining fraction is used for training/validation. "
             "Ignored when using --train, --val or --test, or --folds.",
+        )
+        dl_parse.add_argument(
+            "--cond",
+            type=json.loads,
+            help="Remove transcripts from training based on transcript properties. This does not affect "
+            "transcripts in validation/test sets. Currently only supports number of mapped riboseq reads "
+            "property. Can filter per dataset. See template.yml file for more examples.",
         )
         dl_parse.add_argument(
             "--strict_validation",
             action="store_true",
-            help="does not apply custom loading filters (see 'cond') defined in config file to validation set",
+            help="Do not apply custom loading filters (see 'cond') defined in config file to validation set.",
         )
         dl_parse.add_argument(
             "--leaky_frac",
             type=float,
             default=0.05,
-            help="fraction of training samples that escape filtering through "
-            "conditions defined in input config file",
+            help="Fraction of training samples that escape filtering through "
+            "conditions defined in input config file.",
         )
         dl_parse.add_argument(
             "--min_seq_len",
             type=int,
             default=0,
-            help="minimum sequence length of transcripts",
+            help="Minimum sequence length of transcripts.",
         )
         dl_parse.add_argument(
             "--max_seq_len",
             type=int,
             default=30000,
-            help="maximum sequence length of transcripts",
+            help="Maximum sequence length of transcripts. Can be necessary to prevent GPU OOM errors.",
         )
         dl_parse.add_argument(
             "--max_transcripts_per_batch",
             type=int,
             default=2000,
-            help="maximum of transcripts per batch",
+            help="Maximum of transcripts per batch.",
         )
 
         return dl_parse
 
     def add_training_args(self):
         tr_parse = self.add_argument_group("Model training arguments")
-        tr_parse.add_argument("--lr", type=float, default=1e-3, help="learning rate")
+        tr_parse.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
         tr_parse.add_argument(
             "--decay_rate",
             type=float,
             default=0.96,
-            help="multiplicatively decays learning rate for every epoch",
+            help="Multiplicatively decays learning rate for every epoch.",
         )
         tr_parse.add_argument(
             "--warmup_steps",
             type=int,
             default=1500,
-            help="number of warmup steps at the start of training",
+            help="Number of warmup steps at the start of training.",
         )
         tr_parse.add_argument(
-            "--max_epochs", type=int, default=60, help="maximum epochs of training"
+            "--max_epochs", type=int, default=60, help="Maximum epochs of training."
         )
         tr_parse.add_argument(
             "--patience",
             type=int,
             default=5,
             help="Number of epochs required without the validation loss reducing"
-            "to stop training",
+            "to stop training.",
         )
 
         return tr_parse
@@ -385,13 +389,13 @@ class Parser(argparse.ArgumentParser):
             "--mask_frac",
             type=float,
             default=0.85,
-            help="fraction of inputs that are masked",
+            help="Fraction of inputs that are masked.",
         )
         ss_parse.add_argument(
             "--rand_frac",
             type=float,
             default=0.10,
-            help="fraction of inputs that are randomized",
+            help="Fraction of inputs that are randomized.",
         )
 
         return ss_parse
@@ -404,8 +408,8 @@ class Parser(argparse.ArgumentParser):
             nargs="*",
             default=[],
             choices=["ROC", "PR"],
-            help="metrics calculated on the validation and test"
-            " set. These can require substantial vRAM and cause OOM crashes",
+            help="Metrics calculated on the validation and test"
+            " set. These can require substantial vRAM and cause OOM crashes.",
         )
 
         return ev_parse
@@ -417,7 +421,7 @@ class Parser(argparse.ArgumentParser):
             "input_data",
             type=str,
             metavar="input_data",
-            help="input config file, fasta file, or RNA sequence",
+            help="Input config file, fasta file, or RNA sequence.",
         )
         cd_parse.add_argument(
             "input_type",
@@ -435,7 +439,7 @@ class Parser(argparse.ArgumentParser):
         ms_parse.add_argument(
             "--debug",
             action="store_true",
-            help="debug mode disables logging and checkpointing (only for training)",
+            help="Debug mode disables logging and checkpointing (only for training).",
         )
         ms_parse.add_argument(
             "--version",

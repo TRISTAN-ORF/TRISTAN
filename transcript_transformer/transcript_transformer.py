@@ -175,7 +175,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
         ckpt_path = None
     else:
         ckpt_path = "best"
-    if args.input_type == "hdf5":
+    if args.fasta is not None:
         tr_loader = h5pyDataModule(
             args.h5_path,
             args.exp_path,
@@ -196,21 +196,16 @@ def predict(args, trainer=None, model=None, postprocess=True):
             parallel=args.parallel,
         )
     else:
-        if args.input_type == "RNA":
-            tr_seqs = args.input_data.upper()
-            x_data = [DNA2vec(tr_seqs)]
-            tr_ids = ["seq_1"]
-        elif args.input_type == "fasta":
-            tr_ids = []
-            tr_seqs = []
-            for item in read_fasta(args.input_data):
-                if len(item.sequence) < args.max_seq_len:
-                    tr_ids.append(item.defline)
-                    tr_seqs.append(item.sequence.upper())
-                else:
-                    f"Sequence {item.defline} is longer than {args.max_seq_len}, ommiting..."
-            assert len(tr_seqs) > 0, "no valid sequences in fasta"
-            x_data = [DNA2vec(seq) for seq in tr_seqs]
+        tr_ids = []
+        tr_seqs = []
+        for item in read_fasta(args.input_data):
+            if len(item.sequence) < args.max_seq_len:
+                tr_ids.append(item.defline)
+                tr_seqs.append(item.sequence.upper())
+            else:
+                f"Sequence {item.defline} is longer than {args.max_seq_len}, ommiting..."
+        assert len(tr_seqs) > 0, "no valid sequences in fasta"
+        x_data = [DNA2vec(seq) for seq in tr_seqs]
         tr_loader = DataLoader(
             DNADatasetBatches(tr_ids, x_data), collate_fn=collate_fn, batch_size=1
         )
@@ -220,7 +215,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
         ids = list(itertools.chain(*[o[2] for o in out]))
         preds = list(itertools.chain(*[o[0] for o in out]))
 
-        if args.input_type == "hdf5":
+        if args.fasta is not None:
             targets = list(itertools.chain(*[o[1] for o in out]))
             out = [ids, preds, targets]
         else:
@@ -231,7 +226,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
             if len(np.hstack(mask)) > 0:
                 df = process_seq_preds(ids, preds, tr_seqs, args.min_prob)
                 print(df)
-                df.to_csv(f"{args.out_prefix}.csv", index=None)
+                df.write_csv(f"{args.out_prefix}.csv")
                 print(f"\t -- Sites of interest saved to '{args.out_prefix}.csv'")
             else:
                 print(

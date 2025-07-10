@@ -34,12 +34,19 @@ def parse_args():
         help="Use a pre-trained model for predictions. Models are trained on Ensembl database."
         "Choices: 'human', 'mouse'.",
     )
+    data_parser.add_argument(
+        "--fasta",
+        type=str,
+        default=None,
+        help="Path to a fasta file with sequences to predict. Ignores --h5_path and --gtf_path.",
+    )
     parser.add_processing_args()
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args()
     parser.add_evaluation_args()
-    parser.add_architecture_args()
+    # Too advanced for now, not documented
+    # parser.add_architecture_args()
     default_config = files("transcript_transformer.configs").joinpath("defaults.tt.yml")
     default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
@@ -68,7 +75,7 @@ def main():
         return 0
 
     # --- Determine folds and contigs if relevant ---
-    if args.folds is None:
+    if (args.folds is None) and (args.fasta is None):
         prtime("Determining fold allocations...", "\n")
         f = h5py.File(args.h5_path, "r")["transcript"]
         contigs = np.array(f["seqname"])
@@ -84,60 +91,76 @@ def main():
             args.folds = find_optimal_folds(contig_lens, args.test_frac, args.val_frac)
 
     # --- Training or Prediction ---
-    prtime(f"Evaluating genome sequence data...", "\n\n")
-    result_file = f"{args.out_prefix}.npy"
-    keep_preds = os.path.isfile(result_file) and (not args.overwrite_preds)
-    if ("trained_model" in args) and keep_preds:
-        print(f"\t -- TIS Transformer output present: {result_file}")
-        args.folds = {}  # Basically skip future steps
-        req_train = False
-    elif "trained_model" in args:
-        # args.model > args.trained_model
-        if args.model is not None:
-            print(
-                f"\t -- Using Pre-trained {args.model} TIS Transformer model parameters"
-            )
+    if args.fasta is None:
+        prtime(f"Evaluating genome sequence data...", "\n\n")
+        result_file = f"{args.out_prefix}.npy"
+        keep_preds = os.path.isfile(result_file) and (not args.overwrite_preds)
+        if ("trained_model" in args) and keep_preds:
+            print(f"\t -- TIS Transformer output present: {result_file}")
+            args.folds = {}  # Basically skip future steps
+            req_train = False
+        elif "trained_model" in args:
+            # args.model > args.trained_model
+            if args.model is not None:
+                print(
+                    f"\t -- Using Pre-trained {args.model} TIS Transformer model parameters"
+                )
+            else:
+                print(f"\t -- Using existing TIS Transformer model parameters")
+            req_train = False
         else:
-            print(f"\t -- Using existing TIS Transformer model parameters")
-        req_train = False
+            print(f"\t -- Training TIS Transformer model parameters from scratch")
+            req_train = True
+        for i, fold in args.folds.items():
+            args_set = deepcopy(args)
+            args_set.__dict__.update(fold)
+            # set output path
+            args_set.out_prefix = "_".join([f"{args_set.out_prefix}", f"f{i}"])
+            if req_train:
+                prtime(f"Training model — Fold {i} ...", "\n")
+                # train model
+                trainer, model = train(
+                    args_set, test_model=False, enable_model_summary=False
+                )
+                mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.tt")
+                rel_path = os.path.basename(args_set.out_prefix)
+                args.folds[i]["transfer_checkpoint"] = f"{rel_path}.tt.ckpt"
+                prtime(f"Predicting samples — Fold {i} ...", "\n")
+                predict(args_set, trainer=trainer, model=model, postprocess=False)
+            else:
+                print(args_set.transfer_checkpoint)
+                args_set.transfer_checkpoint = os.path.join(
+                    args.model_dir, args_set.transfer_checkpoint
+                )
+                print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
+                prtime(f"Predicting samples — Fold {i} ...", "\n")
+                predict(args_set, postprocess=False)
+        if len(args.folds) > 0:
+            prtime(f"Merging predictions to {args.out_prefix}.npy...", "\n")
+            merge_outputs(args.out_prefix, args.folds.keys())
+            # remove independent fold outputs
+            [os.remove(f"{args.out_prefix}_f{i}.npy") for i in args.folds.keys()]
+            # Save params file
+            if req_train:
+                args.folds[0]["test"] = []
+                save_dict = {"trained_model": {"folds": args.folds}}
+                with open(f"{args.out_prefix}_params.tt.yml", "w+") as f:
+                    yaml.dump(save_dict, f, default_flow_style=False)
     else:
-        print(f"\t -- Training TIS Transformer model parameters from scratch")
-        req_train = True
-    for i, fold in args.folds.items():
-        args_set = deepcopy(args)
-        args_set.__dict__.update(fold)
-        # set output path
-        args_set.out_prefix = "_".join([f"{args_set.out_prefix}", f"f{i}"])
-        if req_train:
-            prtime(f"Training model — Fold {i} ...", "\n")
-            # train model
-            trainer, model = train(
-                args_set, test_model=False, enable_model_summary=False
-            )
-            mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.tt")
-            rel_path = os.path.basename(args_set.out_prefix)
-            args.folds[i]["transfer_checkpoint"] = f"{rel_path}.tt.ckpt"
-            prtime(f"Predicting samples — Fold {i} ...", "\n")
-            predict(args_set, trainer=trainer, model=model, postprocess=False)
-        else:
-            print(args_set.transfer_checkpoint)
-            args_set.transfer_checkpoint = os.path.join(
-                args.model_dir, args_set.transfer_checkpoint
-            )
-            print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
-            prtime(f"Predicting samples — Fold {i} ...", "\n")
-            predict(args_set, postprocess=False)
-    if len(args.folds) > 0:
-        prtime(f"Merging predictions to {args.out_prefix}.npy...", "\n")
-        merge_outputs(args.out_prefix, args.folds.keys())
-        # remove independent fold outputs
-        [os.remove(f"{args.out_prefix}_f{i}.npy") for i in args.folds.keys()]
-        # Save params file
-        if req_train:
-            args.folds[0]["test"] = []
-            save_dict = {"trained_model": {"folds": args.folds}}
-            with open(f"{args.out_prefix}_params.tt.yml", "w+") as f:
-                yaml.dump(save_dict, f, default_flow_style=False)
+        predict(args, postprocess=False)
+        tr_ids = []
+        tr_seqs = []
+        for item in read_fasta(args.input_data):
+            if len(item.sequence) < args.max_seq_len:
+                tr_ids.append(item.defline)
+                tr_seqs.append(item.sequence.upper())
+            else:
+                f"Sequence {item.defline} is longer than {args.max_seq_len}, ommiting..."
+        assert len(tr_seqs) > 0, "no valid sequences in fasta"
+        x_data = [DNA2vec(seq) for seq in tr_seqs]
+        tr_loader = DataLoader(
+            DNADatasetBatches(tr_ids, x_data), collate_fn=collate_fn, batch_size=1
+        )
 
     # load predictions
     out = np.load(f"{args.out_prefix}.npy", allow_pickle=True)
@@ -152,8 +175,11 @@ def main():
         aligned_pred_list = align_to_h5_ids(args.h5_path, tr_ids, pred_list)
         integrate_seq_predictions(args.h5_path, aligned_pred_list)
         if not args.no_backup:
-            integrate_seq_predictions(args.backup_path, aligned_pred_list)
+            # check of existence of backup path file
+            if os.path.exists(args.backup_path):
+                integrate_seq_predictions(args.backup_path, aligned_pred_list)
 
+    print(args.h5_path)
     # --- Result Processing ---
     df, df_filt, df_novel = construct_output_table(
         h5_path=args.h5_path,
@@ -219,10 +245,10 @@ def integrate_seq_predictions(h5_path, data_list, dtype=np.dtype("float32")):
     grp = f["transcript"]
     dtype = h5py.vlen_dtype(dtype)
     if "tis_transformer_score" in grp.keys():
-        print("\t -- Overwriting results in local h5 database...")
+        print(f"\t -- Overwriting results in {h5_path} database...")
         del grp["tis_transformer_score"]
     else:
-        print("\t -- Writing results to local h5 database...")
+        print(f"\t -- Writing results to {h5_path} database...")
     grp.create_dataset("tis_transformer_score", data=data_list, dtype=dtype)
     f.close()
 

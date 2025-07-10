@@ -26,7 +26,7 @@ def parse_args():
     run_parser.add_argument(
         "--pretrain",
         action="store_true",
-        help="pretrain model using all available samples. Highly recommended for riboformer"
+        help="pretrain model using all available samples. Highly recommended for RiboTIE"
         " if no suitable pre-trained model is not available (e.g., when applied on new species)",
     )
     parser.add_data_args()
@@ -45,6 +45,8 @@ def parse_args():
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args()
+    # Too advanced for now, not documented
+    # parser.add_architecture_args()
     default_config = files("transcript_transformer.configs").joinpath("defaults.rt.yml")
     default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])

@@ -16,7 +16,7 @@
 
 ### 📚 Documentation
 
-**For complete installation instructions, user guides, and tutorials, please see our full documentation on [ReadTheDocs](https://tristan-orf.readthedocs.io/).**
+**For complete installation instructions, user guides, and tutorials, please see our full documentation on [ReadTheDocs](https://transcript-transformer.readthedocs.io/en/latest/).**
 
 ---
 
@@ -35,7 +35,7 @@ The `transcript-transformer` package incorporates the functionality of **TIS Tra
 
 ## 🛠️ Installation
 
-First, install `PyTorch` with GPU support by following the instructions here.
+First, install `PyTorch` with GPU support by following the instructions using [the PyTorch manual](https://pytorch.org/get-started/locally/).
 
 Then, install TRISTAN:
 ```bash
@@ -44,7 +44,9 @@ pip install transcript_transformer
 
 ## 📖 Quick Start
 
-TRISTAN is run from the command line, using a YAML configuration file to specify inputs and parameters.
+TRISTAN can be used to detect translated ORFs using an input fasta file. See the (User Documentation)[https://transcript-transformer.readthedocs.io/en/latest/getting_started.html#tis-transformer-fa-sequence] for more info.
+
+Otherwise, TRISTAN is run from the command line, using a YAML configuration file to specify inputs and parameters.
 
 1.  **Create a configuration file (`config.yml`):**
 

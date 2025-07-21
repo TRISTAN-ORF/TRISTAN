@@ -171,7 +171,7 @@ def main():
             rel_path = os.path.basename(args_set.out_prefix)
             args.folds[i]["transfer_checkpoint"] = f"{rel_path}.tt.ckpt"
             prtime(f"Predicting samples — Fold {i} ...", "\n")
-            predict(args_set, trainer=trainer, model=model, postprocess=False)
+            predict(args_set, trainer=trainer, model=model)
         else:
             print(args_set.transfer_checkpoint)
             args_set.transfer_checkpoint = os.path.join(
@@ -179,7 +179,7 @@ def main():
             )
             print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
             prtime(f"Predicting samples — Fold {i} ...", "\n")
-            predict(args_set, postprocess=False)
+            predict(args_set)
     if len(args.folds) > 0:
         prtime(f"Merging predictions to {args.out_prefix}.npy...", "\n")
         merge_outputs(args.out_prefix, args.folds.keys())

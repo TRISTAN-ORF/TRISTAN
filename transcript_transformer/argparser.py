@@ -69,15 +69,17 @@ class Parser(argparse.ArgumentParser):
             "--ribo_paths",
             type=json.loads,
             help="Dictionary containing ribosome sample ID's and path to reads mapped to transcriptome (.bam)."
-            " recommended to define in config file",
+            " Recommended to define in YAML config file, otherwise, use command line JSON string, "
+            'e.g., \'{"sample1": "/path/to/sample1.bam", "sample2": "/path/to/sample2.bam"}\'',
         )
         input_parse.add_argument(
             "--samples",
             type=str,
             nargs="+",
-            help="Samples to process. These have to be listed in 'ribo_paths'. Allows merging of reads of  "
-            "multiple samples. --samples can also be used to process part of your "
-            "database, e.g., in combination with running --parallel.",
+            help="Samples to process. IDs have to be present as keys in 'ribo_paths'. Allows merging of reads of  "
+            "multiple samples by listing a DICT grouping sample IDs together, in which case it is recommended to define "
+            "in YAML config file. --samples can also be used to process one sample of your database, e.g., "
+            "in combination with running --parallel.",
         )
         input_parse.add_argument(
             "--parallel",
@@ -465,7 +467,9 @@ class Parser(argparse.ArgumentParser):
                     model_dir = os.path.dirname(os.path.realpath(f.name))
                 self.set_defaults(**input_config)
 
-        # parse arguments
+        # if no arguments are passed, print help
+        if len(argv) == 0:
+            argv = ["--help"]
         args = self.parse_args(argv)
         # read passed config files
         for conf in args.conf:
@@ -503,7 +507,10 @@ class Parser(argparse.ArgumentParser):
             if args.out_prefix[-1] == "_":
                 args.out_prefix = args.out_prefix[:-1]
         else:
-            args.out_prefix = args.h5_path[:-3]
+            if args.h5_path:
+                args.out_prefix = args.h5_path[:-3]
+            else:
+                args.out_prefix = "tr_output"
         # ensure out_prefix is not directory
         cond_1 = not os.path.normpath(args.out_prefix).endswith(os.path.sep)
         cond_2 = not os.path.isdir(os.path.normpath(args.out_prefix))
@@ -652,5 +659,5 @@ class Parser(argparse.ArgumentParser):
             if "trained_model" in args:
                 args.folds = args.trained_model["folds"]
 
-        print(args)
+        print(args, end="\n\n")
         return args

@@ -4,6 +4,7 @@ import yaml
 import numpy as np
 import heapq
 from datetime import datetime
+from fasta_reader import read_fasta
 from transcript_transformer import CDN_PROT_DICT, PROT_IDX_DICT, DNA_IDX_DICT
 
 
@@ -207,6 +208,27 @@ def load_args(path, args):
     args.__dict__.update(input_config)
 
     return args
+
+
+def parse_fasta(fasta_path, max_seq_len=None):
+    """Parse fasta file and return ids and sequences.
+
+    Args:
+        fasta_path (str): path to fasta file
+        max_seq_len (int, optional): maximum sequence length. Defaults to None.
+
+    Returns:
+        tuple: list of ids, list of sequences
+    """
+    ids = []
+    seqs = []
+    for item in read_fasta(fasta_path):
+        if max_seq_len is None or len(item.sequence) <= max_seq_len:
+            ids.append(item.defline)
+            seqs.append(item.sequence.upper())
+        else:
+            print(f"Sequence {item.defline} is longer than {max_seq_len}, omitting...")
+    return ids, seqs
 
 
 def mv_ckpt_to_out_dir(trainer, out_prefix):

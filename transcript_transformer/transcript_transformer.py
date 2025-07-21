@@ -2,7 +2,6 @@ import os
 import numpy as np
 import logging
 import itertools
-from fasta_reader import read_fasta
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,8 +15,7 @@ from .transcript_loader import (
     DNADatasetBatches,
     collate_fn,
 )
-from .util_functions import DNA2vec
-from .processing import process_seq_preds
+from .util_functions import DNA2vec, parse_fasta
 
 
 def device_info_filter(record):
@@ -147,7 +145,7 @@ def train(args, test_model=True, enable_model_summary=True):
     return trainer, model
 
 
-def predict(args, trainer=None, model=None, postprocess=True):
+def predict(args, trainer=None, model=None):
     if args.accelerator == "cpu":
         map_location = torch.device("cpu")
     else:
@@ -175,7 +173,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
         ckpt_path = None
     else:
         ckpt_path = "best"
-    if args.fasta is not None:
+    if args.fasta is None:
         tr_loader = h5pyDataModule(
             args.h5_path,
             args.exp_path,
@@ -196,14 +194,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
             parallel=args.parallel,
         )
     else:
-        tr_ids = []
-        tr_seqs = []
-        for item in read_fasta(args.input_data):
-            if len(item.sequence) < args.max_seq_len:
-                tr_ids.append(item.defline)
-                tr_seqs.append(item.sequence.upper())
-            else:
-                f"Sequence {item.defline} is longer than {args.max_seq_len}, ommiting..."
+        tr_ids, tr_seqs = parse_fasta(args.fasta, args.max_seq_len)
         assert len(tr_seqs) > 0, "no valid sequences in fasta"
         x_data = [DNA2vec(seq) for seq in tr_seqs]
         tr_loader = DataLoader(
@@ -220,18 +211,6 @@ def predict(args, trainer=None, model=None, postprocess=True):
             out = [ids, preds, targets]
         else:
             out = [ids, preds]
-
-        if postprocess:
-            mask = [np.where(pred > args.min_prob)[0] for pred in preds]
-            if len(np.hstack(mask)) > 0:
-                df = process_seq_preds(ids, preds, tr_seqs, args.min_prob)
-                print(df)
-                df.write_csv(f"{args.out_prefix}.csv")
-                print(f"\t -- Sites of interest saved to '{args.out_prefix}.csv'")
-            else:
-                print(
-                    f"\t !-> No sites of interest found (omitted creation of '{args.out_prefix}.csv')"
-                )
     else:
         out = []
 

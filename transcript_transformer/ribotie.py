@@ -59,7 +59,9 @@ def parse_args():
 def main():
     prtime("Running RiboTIE tool\n")
     args = parse_args()
-    assert args.use_ribo, "No ribosome data specified."
+    assert (
+        args.use_ribo
+    ), "No ribosome data specified, use --ribo_paths to specify ribosome data files."
 
     # --- Data loading ---
     process_seq_data(
@@ -126,7 +128,7 @@ def main():
                 args_set, test_model=False, enable_model_summary=False
             )
             # predict TIS locations
-            predict(args_set, trainer=trainer, model=model, postprocess=False)
+            predict(args_set, trainer=trainer, model=model)
             # saving model
             mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.rt")
             rel_path = os.path.basename(args_set.out_prefix)

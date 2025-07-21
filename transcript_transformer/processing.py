@@ -1,11 +1,9 @@
 import numpy as np
 from tqdm import tqdm
 import h5py
-import pandas as pd
 import polars as pl
 from scipy.stats import entropy
 from scipy.sparse import csr_matrix
-from pdb import set_trace
 from transcript_transformer import (
     RIBOTIE_MQC_HEADER,
     START_CODON_MQC_HEADER,
@@ -814,16 +812,16 @@ def process_seq_preds(ids, preds, seqs, min_prob):
             TTS_pos = idx + len(prot_seq) * 3
             rows.append(
                 {
-                    "transcript_id": ids[i][0],
-                    "transcript_len": len(tr),
+                    "transcript_id": ids[i],
+                    "transcript_length": len(tr),
                     "TIS_pos": idx + 1,
                     "output": preds[i][idx],
                     "start_codon": tr[idx : idx + 3],
                     "TTS_pos": TTS_pos,
                     "stop_codon": stop_codon,
                     "TTS_on_transcript": has_stop,
-                    "prot_len": len(prot_seq),
-                    "prot_seq": prot_seq,
+                    "protein_length": len(prot_seq),
+                    "protein_sequence": prot_seq,
                 }
             )
     return pl.DataFrame(rows)

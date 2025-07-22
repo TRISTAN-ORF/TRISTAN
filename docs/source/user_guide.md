@@ -14,8 +14,7 @@ TRISTAN is created to discover translating ORFs on the transcriptome using two a
 Both the TIS Transformer and RiboTIE tools can utilize the same database and config files, where both tools should be run from inside the same project folder.
 :::
 
-.. image:: ../_static/TRISTAN_overview.png
-    :alt: Overview
+![Overview](_static/TRISTAN_overview.png)
 
 ### Checkpoint detection
 
@@ -203,19 +202,16 @@ For ORF calls (positive set; adjustable by threshold) **with identical genomic T
 
 Where 'protein coding' takes precedence over other transcript biotypes in case multiple transcript biotypes exist within the same group. Here, varRNA-ORFs denote ORFs on transcript other than 'protein coding' and 'lncRNA'. Called ORFs can be variant CDSs present on alternate transcript biotypes, such as 'retained intron', 'nonsense mediated decay', or 'processed pseudogene'.
 
-.. image:: ../_static/CDS_filtering_1.png
-    :alt: CDS_filtering
+![CDS_filtering](_static/CDS_filtering_1.png)
 
 Some example scenarios include, remember that filtering only occurs across groups of called ORFs sharing the same TIS:
 
-.. image:: ../_static/CDS_filtering_2.png
-    :alt: CDS_filtering_2
+![CDS_filtering_1](_static/CDS_filtering_2.png)
 
 A large number of called truncations/extensions and ncORFs are rejected following the above filter methods due to having shared genomic coordinates features to annotated CDSs. Overall, lncRNA-ORFs are the least affected.
 The same trends are observed on all evaluated data. An example dataset shows the following numbers:
 
-.. image:: ../_static/CDS_filtering_3.png
-    :alt: CDS_filtering_3
+![CDS_filtering_2](_static/CDS_filtering_3.png)
 
 ### Near-miss identifier
 

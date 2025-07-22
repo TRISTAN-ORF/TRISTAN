@@ -1,2 +1,4 @@
 recursive-include transcript_transformer/configs *
 recursive-include transcript_transformer/pretrained *
+prune docs
+prune tests

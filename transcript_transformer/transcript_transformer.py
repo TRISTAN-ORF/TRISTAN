@@ -173,7 +173,7 @@ def predict(args, trainer=None, model=None):
         ckpt_path = None
     else:
         ckpt_path = "best"
-    if args.fasta is None:
+    if not hasattr(args, "fasta") or args.fasta is None:
         tr_loader = h5pyDataModule(
             args.h5_path,
             args.exp_path,
@@ -206,7 +206,7 @@ def predict(args, trainer=None, model=None):
         ids = list(itertools.chain(*[o[2] for o in out]))
         preds = list(itertools.chain(*[o[0] for o in out]))
 
-        if args.fasta is not None:
+        if hasattr(args, "fasta") and (args.fasta is not None):
             targets = list(itertools.chain(*[o[1] for o in out]))
             out = [ids, preds, targets]
         else:

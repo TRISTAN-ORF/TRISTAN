@@ -136,7 +136,7 @@ def main():
         prtime(f"Merging predictions for '{args.out_prefix}_pretrain.npy'...", "\n")
         merge_outputs(f"{args.out_prefix}_pretrain", args.folds.keys())
         # remove independent fold outputs
-        [os.remove(f"{args.out_prefix}_f{i}.npy") for i in args.folds.keys()]
+        [os.remove(f"{args.out_prefix}_pretrain_f{i}.npy") for i in args.folds.keys()]
         args.folds[0]["test"] = []
         save_dict = {
             "pretrained_model": {"folds": args.folds},
@@ -179,6 +179,7 @@ def main():
             elif not keep_preds and keep_model:
                 print(f"\t -- Loading trained RiboTIE model: {model_file}")
                 args = load_args(model_file, args)
+                args.model_dir = os.path.dirname(args.out_prefix)
                 finetune = False
             elif "pretrained_model" in args:
                 print(f"\t -- Using listed PRE-trained RiboTIE model")
@@ -201,7 +202,7 @@ def main():
             for i, fold in folds.items():
                 args_set.__dict__.update(fold)
                 args_set.transfer_checkpoint = os.path.join(
-                    args.model_dir, args_set.transfer_checkpoint
+                    os.fspath(args.model_dir), args_set.transfer_checkpoint
                 )
                 args_set.out_prefix = f"{args.out_prefix}_{group}_f{i}"
                 if finetune:

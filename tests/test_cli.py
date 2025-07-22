@@ -48,15 +48,15 @@ def test_cli_help():
 
 # TIS Transformer
 def test_sequence_data_loading():
-    remove_if_exists(["dbs/tis_transformer_loading.h5"])
+    remove_if_exists(["dbs/tt_loading.h5"])
 
     command = [
         "tis_transformer",
-        "configs/tis_transformer_loading.yml",
+        "configs/tt_loading.yml",
     ]
 
     result = subprocess.run(command, check=True, text=True, capture_output=True)
-    file_path = Path("dbs/tis_transformer_loading.h5")
+    file_path = Path("dbs/tt_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
 
     f = h5py.File(file_path, "r")
@@ -67,17 +67,32 @@ def test_sequence_data_loading():
 
 def test_sequence_training():
     files = [
-        "out/tis_transformer.npy",
-        "out/tis_transformer.csv",
-        "out/tis_transformer.gtf",
-        "out/tis_transformer.unfiltered.csv",
-        "out/tis_transformer.unfiltered.gtf",
+        f"out/tt_training.{ext}"
+        for ext in ["npy", "csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
     remove_if_exists(files)
 
     command = [
         "tis_transformer",
-        "configs/tis_transformer_training.yml",
+        "configs/tt_training.yml",
+    ]
+
+    subprocess.run(command, check=True, text=True, capture_output=True)
+
+    assert_if_exists(files)
+
+
+def test_sequence_predicting():
+    files = [
+        f"out/tt_predicting.{ext}"
+        for ext in ["npy", "csv", "gtf", "redundant.csv", "redundant.gtf"]
+    ]
+    remove_if_exists(files)
+
+    command = [
+        "tis_transformer",
+        "configs/tt_predicting.yml",
+        "data/tt_params.yml",
     ]
 
     subprocess.run(command, check=True, text=True, capture_output=True)
@@ -86,16 +101,16 @@ def test_sequence_training():
 
 
 # RiboTIE
-def test_ribotie_sam_data_loading():
-    remove_if_exists(["dbs/ribotie_sam_loading.h5"])
+def test_rt_sam_data_loading():
+    remove_if_exists(["dbs/rt_sam_loading.h5"])
 
     command = [
         "ribotie",
-        "configs/ribotie_sam_loading.yml",
+        "configs/rt_sam_loading.yml",
     ]
 
     result = subprocess.run(command, check=True, text=True, capture_output=True)
-    file_path = Path("dbs/ribotie_sam_loading.h5")
+    file_path = Path("dbs/rt_sam_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
     f = h5py.File(file_path, "r")["transcript"]
     assert "riboseq" in f.keys(), "HDF5 file does not contain 'ribo' group"
@@ -107,16 +122,16 @@ def test_ribotie_sam_data_loading():
     ), "HDF5 file does not contain 'data' entries"
 
 
-def test_ribotie_bam_data_loading():
-    remove_if_exists(["dbs/ribotie_bam_loading.h5"])
+def test_rt_bam_data_loading():
+    remove_if_exists(["dbs/rt_bam_loading.h5"])
 
     command = [
         "ribotie",
-        "configs/ribotie_bam_loading.yml",
+        "configs/rt_bam_loading.yml",
     ]
 
     subprocess.run(command, check=True, text=True, capture_output=True)
-    file_path = Path("dbs/ribotie_bam_loading.h5")
+    file_path = Path("dbs/rt_bam_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
     f = h5py.File(file_path, "r")["transcript"]
     assert "riboseq" in f.keys(), "HDF5 file does not contain 'ribo' group"
@@ -128,39 +143,39 @@ def test_ribotie_bam_data_loading():
     ), "HDF5 file does not contain 'data' entries"
 
 
-def test_ribotie_pretraining():
+def test_rt_pretraining():
     files = [
-        f"out/pretrain_f{i}.{ext}"
-        for i, ext in list(product(range(2), ["npy", "csv", "gtf"]))
+        f"out/rt_pretraining_pretrain_f{i}.rt.{ext}"
+        for i, ext in list(product(range(2), ["ckpt"]))
     ] + [
-        f"out/pretrain_f{i}.unfiltered.{ext}"
-        for i, ext in list(product(range(2), ["csv", "gtf"]))
+        f"out/rt_pretraining_pretrain.{ext}"
+        for ext in ["csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
 
     remove_if_exists(files)
 
     command = [
         "ribotie",
-        "configs/ribotie_pretraining.yml",
+        "configs/rt_pretraining.yml",
     ]
     subprocess.run(command, check=True, text=True, capture_output=True)
 
     assert_if_exists(files)
 
 
-def test_ribotie_training():
+def test_rt_training():
     files = [
-        f"out/sample_{i}.{ext}"
+        f"out/rt_training_sample_{i}.{ext}"
         for i, ext in list(product(range(1, 4), ["npy", "csv", "gtf"]))
     ] + [
-        f"out/sample_{i}.unfiltered.{ext}"
+        f"out/rt_training_sample_{i}.redundant.{ext}"
         for i, ext in list(product(range(1, 4), ["csv", "gtf"]))
     ]
     remove_if_exists(files)
 
     command = [
         "ribotie",
-        "configs/ribotie_training.yml",
+        "configs/rt_training.yml",
     ]
     subprocess.run(command, check=True, text=True, capture_output=True)
 

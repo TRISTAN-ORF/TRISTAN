@@ -1,5 +1,66 @@
+# pyproject.toml
+
 [build-system]
 requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
+
+[project]
+name = "transcript-transformer"
+version = "1.0.0"
+description = "Transformers for Transcripts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+keywords = ["transformer", "transcript", "bioinformatics", "ORF"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License", # Assuming MIT based on LICENSE file
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+authors = [
+    { name = "Jim Clauwaert" },
+]
+
+dependencies = [
+    "pytorch-lightning >= 2.2.1",
+    "tensorboard >= 2.16.2",
+    "torchmetrics >= 1.1.2",
+    "performer-pytorch == 1.1.4",
+    "local-attention == 1.7.1",
+    "h5py >= 3.11.0",
+    "numpy >= 1.26.4",
+    "scipy >= 1.13.0",
+    "pandas >= 2.2.2",
+    "biobear >= 0.23.7",
+    "pyarrow >= 18.0.0",
+    "h5max == 0.3.2",
+    "fasta-reader == 3.0.2",
+    "polars == 1.28",
+    "tqdm >= 4.66.2",
+    "pyfaidx == 0.8.1.1",
+    "gtfparse-transcript-transformer == 2.5.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/TRISTAN-ORF/TRISTAN"
+"Bug Tracker" = "https://github.com/TRISTAN-ORF/TRISTAN/issues" # Optional: good to add
+
+[project.scripts]
+ribotie = "transcript_transformer.ribotie:main"
+tis_transformer = "transcript_transformer.tis_transformer:main"
+
+[tool.setuptools.packages.find] # This replaces [options.packages.find]
+exclude = [
+    "docs*",
+    "tests*",
+]
+
+[tool.setuptools.package-data]
+#"transcript_transformer" = []
+

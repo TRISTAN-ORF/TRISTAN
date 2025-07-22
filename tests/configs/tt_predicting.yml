@@ -15,7 +15,7 @@ fa_path : data/GRCh38v110_snippet.fa
 ########################################################
 ## path to hdf5 database created to store data.
 ########################################################
-h5_path : dbs/tt_predicting.h5
+h5_path : data/tt_predicting.h5
 ########################################################
 ## Out prefix for predictions, defaults to hdf5 path
 ########################################################

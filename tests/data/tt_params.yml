@@ -1,0 +1,18 @@
+trained_model:
+  folds:
+    0:
+      test: []
+      train:
+      - '4'
+      transfer_checkpoint: tt_f0.tt.ckpt
+      val:
+      - '3'
+    1:
+      test:
+      - '3'
+      - '4'
+      train:
+      - '1'
+      transfer_checkpoint: tt_f1.tt.ckpt
+      val:
+      - '2'

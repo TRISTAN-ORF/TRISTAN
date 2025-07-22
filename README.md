@@ -44,7 +44,7 @@ pip install transcript_transformer
 
 ## 📖 Quick Start
 
-TRISTAN can be used to detect translated ORFs using an input fasta file. See the (User Documentation)[https://transcript-transformer.readthedocs.io/en/latest/getting_started.html#tis-transformer-fa-sequence] for more info.
+TRISTAN can be used to detect translated ORFs using an input fasta file. See the [User Documentation](https://transcript-transformer.readthedocs.io/en/latest/getting_started.html#tis-transformer-fa-sequence) for more info.
 
 Otherwise, TRISTAN is run from the command line, using a YAML configuration file to specify inputs and parameters.
 

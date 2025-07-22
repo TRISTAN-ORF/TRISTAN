@@ -67,11 +67,8 @@ def test_sequence_data_loading():
 
 def test_sequence_training():
     files = [
-        "out/tis_transformer.npy",
-        "out/tis_transformer.csv",
-        "out/tis_transformer.gtf",
-        "out/tis_transformer.redundant.csv",
-        "out/tis_transformer.redundant.gtf",
+        f"out/tt_training.{ext}"
+        for ext in ["npy", "csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
     remove_if_exists(files)
 
@@ -87,18 +84,15 @@ def test_sequence_training():
 
 def test_sequence_predicting():
     files = [
-        "out/tis_transformer.npy",
-        "out/tis_transformer.csv",
-        "out/tis_transformer.gtf",
-        "out/tis_transformer.redundant.csv",
-        "out/tis_transformer.redundant.gtf",
+        f"out/tt_predicting.{ext}"
+        for ext in ["npy", "csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
     remove_if_exists(files)
 
     command = [
         "tis_transformer",
-        "configs/tt_predicting.tt.yml",
-        "configs/tt_params.yml",
+        "configs/tt_predicting.yml",
+        "data/tt_params.yml",
     ]
 
     subprocess.run(command, check=True, text=True, capture_output=True)
@@ -151,11 +145,11 @@ def test_rt_bam_data_loading():
 
 def test_rt_pretraining():
     files = [
-        f"out/rt_pretraining_pretrain_f{i}.{ext}"
-        for i, ext in list(product(range(2), ["npy", "csv", "gtf"]))
+        f"out/rt_pretraining_pretrain_f{i}.rt.{ext}"
+        for i, ext in list(product(range(2), ["ckpt"]))
     ] + [
-        f"out/rt_pretraining_pretrain_f{i}.redundant.{ext}"
-        for i, ext in list(product(range(2), ["csv", "gtf"]))
+        f"out/rt_pretraining_pretrain.{ext}"
+        for ext in ["csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
 
     remove_if_exists(files)

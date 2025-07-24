@@ -2,6 +2,7 @@
 
 TRISTAN has several pre-trained models available that allow direct prediction of transcript features. Models are always trained and applied on non-overlapping folds of the data to prevent overfitting and bias in the prediction results. When applying TRISTAN models for your own data, make sure the contig names assigned to the different folds align with those used in your input files. See [the user guide on saved model configs](user_guide.md#trained-models) to understand how to interpret model config files and how to alter contig allocations. 
 
+(tis-transformer)=
 ## 🧬 TIS Transformer
 
 ### Human (Ensembl v113)

@@ -32,7 +32,7 @@ pip install transcript_transformer
 :::{tip}
 :class: myclass1 myclass2
 :name: fasta_predict
-To apply TIS transformer on a small set of transcript sequences in fasta format, skip directly to [this section](#fa-process)
+To apply TIS transformer on a small set of transcript sequences in fasta format, skip directly to [the end of this page](#fa-process)
 :::
 
 Dictionary files (YAML/JSON) are the recommended approach to pass arguments to the tool. It is possible to list multiple configuration files. Required inputs are a **genome-level** reference and assembly file (`*.gtf`, `*.fa`).
@@ -72,7 +72,7 @@ TRISTAN tools perform the following steps:
 2. Finetune models on non-overlapping folds of the data.
 3. Get model predictions for all positions of the transcriptome
 4. Collect metadata for the top ranking predictions
-5. Filter out [CDS variant calls](user_guide.md#CDS-filters)
+5. Filter out [CDS variant calls](user_guide.md#CDS-variant-filters)
 
 
 #### TIS Transformer
@@ -122,7 +122,7 @@ ribotie default.yml
 (fa-process)=
 ## 🧬 TIS Transformer: FA sequence
 
-It is possible to apply TIS Transformer with only a fasta file containing transcript sequences to predict translated ORFs. This can be achieved using any of our pre-trained models. Here, `--fold` can be used to apply a model that was not trained on homologous transcript sequences listed in the input fasta file. If applicable, choose the model where the contig is featured within the test set as listed (here)[pretrained.md#tis-transformer]. For example, if the model features sequences that are transcript isoforms of a gene located on chromosome 1 of the human genome, we can run: 
+It is possible to apply TIS Transformer with only a fasta file containing transcript sequences to predict translated ORFs. This can be achieved using any of our pre-trained models. Here, `--fold` can be used to apply a model that was not trained on homologous transcript sequences listed in the input fasta file. If applicable, choose the model where the contig is featured within the test set as listed [by the section on pre-trained models](pretrained.md#tis-transformer). For example, if the model features sequences that are transcript isoforms of a gene located on chromosome 1 of the human genome, we can run: 
 
 ```bash
 tis_transformer --fasta <input.fa> --model human --fold 0 --accelerator cpu

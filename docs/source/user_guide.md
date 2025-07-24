@@ -22,7 +22,7 @@ TRISTAN tools automatically resume from certain checkpoints by detecting the pre
 
 1. Parsing data into a HDF5 database
 
-Use `--data` to only perform data loading. `--overwrite_data` can be used to overwrite ribosome profiling data. Genome information cannot be overwritten and requires the creation of a new database instead.
+Use `--data` to only perform data loading. `--overwrite_data` can be used to overwrite ribosome profiling data. Genome information cannot be overwritten and requires the creation of a new database instead (or deletion of the existing one).
 
 2. Optimizing a model on the HDF5 database **(GPU required)**
 
@@ -35,14 +35,6 @@ Multiple models are trained to predict the presence of translated ORFs on non-ov
 4. Collecting metadata for the top ranking predictions
 
 As a last step, RiboTIE and TIS Transformer collect metadata for the top predictions accross the full transcriptome. Several steps are performed that filter high-scoring ORFs from the final output table, [which can be altered by the user](#orf-property-filters).
-
-
-[perform the following steps:
-1. Parse genomic data into a single HDF5 database (`h5_path`)
-2. Parse Ribosome profiling data into the same or individual (see `--parallel`) HDF5 databases.
-3. Optimize models on non-overlapping folds of the data. 
-4. Get model predictions for all positions of the transcriptome
-5. Collect metadata for the top ranking predictions taking into account [ORF filters](#ORF-filters) and [CDS variant calls](#CDS-filters).
 
 :::{tip}
 :class: myclass1 myclass2
@@ -139,7 +131,7 @@ trained_model:
 :::{attention}
 :class: myclass1 myclass2
 :name: folds
-When applying references that adhere to different naming, make sure to prevent that all transcripts are parsed for prediction of translated ORFs by the `db_BT245H3K27M_C1_f0.rt.ckpt` model as none of the chromosome names overlap. Check the output log to evaluate chromosome assignment.
+When applying references that adhere to different naming, make sure to update the `yml` files to prevent that all transcripts are processed by the `db_BT245H3K27M_C1_f0.rt.ckpt` model as none of the chromosome names overlap and are thus assigned to the wildcard group `[]`. Check the output log to evaluate chromosome assignment.
 :::
 
 ## 📝 Results
@@ -254,8 +246,6 @@ RiboTIE still pulls data from the `hdf5` database containing the genomic feature
 ## 🐍 Snakemake
 
 Snakemake or other workflow software can be a useful tool to navigate the various steps performed using the TRISTAN software. We give some examples here to help navigate setting up your pipeline.
-
-A snakemake pipeline parsing ribosome profiling samples in parallel could look like this. Here, `--samples` is used to run RiboTIE on only a single sample, allowing the use of a single config file that lists all data under `ribo_paths`.
 
 ```python
 # from config.yml, can also be part of a snakemake configuration file

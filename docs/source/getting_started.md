@@ -32,7 +32,7 @@ pip install transcript_transformer
 :::{tip}
 :class: myclass1 myclass2
 :name: fasta_predict
-**To apply TIS transformer on a small set of transcript sequences in fasta format, skip directly to [this section](user_guide.md#fasta_file)**
+To apply TIS transformer on a small set of transcript sequences in fasta format, skip directly to [this section](#fa-process)
 :::
 
 Dictionary files (YAML/JSON) are the recommended approach to pass arguments to the tool. It is possible to list multiple configuration files. Required inputs are a **genome-level** reference and assembly file (`*.gtf`, `*.fa`).
@@ -119,7 +119,7 @@ ribotie default.yml
 `SAM/BAM` files can require more than 100GB in RAM to load the data in. However, loading from the `hdf5` database is memory efficient. To first load in the data before utilizing the GPU, use `--data`.
 :::
 
-
+(fa-process)=
 ## 🧬 TIS Transformer: FA sequence
 
 It is possible to apply TIS Transformer with only a fasta file containing transcript sequences to predict translated ORFs. This can be achieved using any of our pre-trained models. Here, `--fold` can be used to apply a model that was not trained on homologous transcript sequences listed in the input fasta file. If applicable, choose the model where the contig is featured within the test set as listed (here)[pretrained.md#tis-transformer]. For example, if the model features sequences that are transcript isoforms of a gene located on chromosome 1 of the human genome, we can run: 

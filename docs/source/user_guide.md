@@ -34,7 +34,7 @@ Multiple models are trained to predict the presence of translated ORFs on non-ov
 
 4. Collecting metadata for the top ranking predictions
 
-As a last step, RiboTIE and TIS Transformer collect metadata for the top predictions accross the full transcriptome. Several steps are performed that filter high-scoring ORFs from the final output table, [which can be altered by the user](#orf-property-filters).
+As a last step, RiboTIE and TIS Transformer collect metadata for the top predictions accross the full transcriptome. Several steps are performed that filter high-scoring ORFs from the final output table, such as [those defined by the user](#orf-property-filters), and [CDS variant filters](#CDS-variant-filters).
 
 :::{tip}
 :class: myclass1 myclass2
@@ -180,7 +180,7 @@ Custom filtered can be toggled or altered by the user. Top scoring ORFs are filt
 - `--start_codons`: allowed start codons (`start_codon`). Default settings filter out non-near-cognate (*TG) codons. This flag expects a regular expression with the allowed start codons. Default value is `".*TG$"`
 - `--include_invalid_TTS`: boolean flag indicating a valid translation termination site (`TTS_on_transcript`) is **not required**. Default setting is `False`.
 
-(CDS-filters)=
+(CDS-variant-filters)=
 ### CDS variant filters 
 
 Reads mapped to the genome are assigned to all transcripts that share the 5' genomic site of the read. For genes featuring multiple transcript isoforms, ribosome fingerprint of a coding sequence can thus be (largely) shared, which results in ORF calls across multiple transcripts that are likely false positives. To illustrate, without post-processing, a uORF on one transcript could have an identical genomic region as an existing annotated CDS on another transcript (see CDS clone). To address multiplicative calls rising from this property of ribosome profiling, we now provide a filtered down list of ORF calls following these listed strategies

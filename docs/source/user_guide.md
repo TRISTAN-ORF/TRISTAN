@@ -347,7 +347,7 @@ rule ribotie_parse_riboseq_samples:
         slurm_partition="largemem",
     shell:
         """
-        ribotie {input.config} --ribo_paths {params.json} --data --parallel
+        ribotie {input.config} --ribo_paths '{params.json}' --data --parallel
         """
 
 # Run RiboTIE on processed data for individual samples
@@ -368,7 +368,7 @@ rule ribotie_finetune_and_predict_riboseq_samples:
         slurm_extra="--gpus=1"
     shell:
         """
-        ribotie {input.config} --ribo_paths {params.json} --parallel
+        ribotie {input.config} --ribo_paths '{params.json}' --parallel
         """
 ```
 
@@ -413,6 +413,6 @@ rule ribotie_predict_custom_transcripts:
         slurm_extra="--gpus=1"
     shell:
         """
-        ribotie {input.config} {input.model} --ribo_paths {params.json} --parallel
+        ribotie {input.config} {input.model} --ribo_paths '{params.json}' --parallel
         """
 ```

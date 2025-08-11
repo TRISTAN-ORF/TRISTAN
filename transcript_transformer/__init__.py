@@ -1,6 +1,8 @@
 # Define global variables
 
-# --- BIOLOGICAL SEQUENCE DICTS ---
+# --- BIOLOGICAL SEQUENCE LISTS/DICTS ---
+STOP_CDNS = ["TAA", "TAG", "TGA"]
+
 CDN_PROT_DICT = {
     "ATA": "I",
     "ATC": "I",
@@ -105,6 +107,7 @@ DNA_IDX_DICT = {
 
 IDX_PROT_DICT = {v: k for k, v in PROT_IDX_DICT.items()}
 IDX_DNA_DICT = {v: k for k, v in DNA_IDX_DICT.items()}
+
 
 # --- DATA PROCESSING VARIABLES ---
 REQ_HEADERS = [

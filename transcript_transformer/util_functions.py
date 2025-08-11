@@ -1,11 +1,32 @@
 import os
+import re
 import shutil
 import yaml
 import numpy as np
+import polars as pl
 import heapq
 from datetime import datetime
 from fasta_reader import read_fasta
-from transcript_transformer import CDN_PROT_DICT, PROT_IDX_DICT, DNA_IDX_DICT
+from typing import List, Dict, Tuple
+
+from transcript_transformer import (
+    CDN_PROT_DICT,
+    PROT_IDX_DICT,
+    DNA_IDX_DICT,
+    IDX_DNA_DICT,
+)
+
+
+HGVS_PATTERNS = {
+    # Order is important: more specific (ranges) must come before less specific (singles)
+    "sub": re.compile(r"r\.(\d+)([ACGTN])>([ACGTN])", re.IGNORECASE),
+    "del_range": re.compile(r"r\.(\d+)[-_](\d+)del", re.IGNORECASE),
+    "del_single": re.compile(r"r\.(\d+)del", re.IGNORECASE),
+    "dup_range": re.compile(r"r\.(\d+)[-_](\d+)dup", re.IGNORECASE),
+    "dup_single": re.compile(r"r\.(\d+)dup", re.IGNORECASE),
+    # This is the line that has been changed
+    "ins": re.compile(r"r\.(\d+)[-_](\d+)ins([ACGTN]+)", re.IGNORECASE),
+}
 
 
 def construct_prot(seq):
@@ -420,6 +441,272 @@ def find_distant_exon_coord(ref_coord, distance, strand, exons):
         dist_coord = -1
 
     return dist_coord
+
+
+def parse_hgvs_mutation(hgvs: str) -> Dict:
+    """Parses an HGVS r. notation suffix into a structured dictionary."""
+    hgvs_suffix = hgvs.split(":")[-1]
+    for mut_type, pattern in HGVS_PATTERNS.items():
+        if match := pattern.search(hgvs_suffix):
+            groups = match.groups()
+            if mut_type == "sub":
+                return {
+                    "id": hgvs,
+                    "type": "sub",
+                    "start": int(groups[0]) - 1,
+                    "ref": groups[1],
+                    "alt": groups[2],
+                }
+            elif "del" in mut_type:
+                start = int(groups[0]) - 1
+                end = int(groups[1]) - 1 if len(groups) > 1 else start
+                return {"id": hgvs, "type": "del", "start": start, "end": end}
+            elif "dup" in mut_type:
+                start = int(groups[0]) - 1
+                end = int(groups[1]) - 1 if len(groups) > 1 else start
+                return {"id": hgvs, "type": "dup", "start": start, "end": end}
+            elif mut_type == "ins":
+                return {
+                    "id": hgvs,
+                    "type": "ins",
+                    "start": int(groups[0]) - 1,
+                    "alt": groups[2],
+                }
+    raise ValueError(f"Unsupported HGVS notation: {hgvs}")
+
+
+def validate_mutations(mutations: List[Dict]) -> List[Dict]:
+    """Checks for conflicting mutations and returns a list of valid, non-conflicting mutations."""
+    affected_indices = set()
+    valid_mutations = []
+
+    # Sort by start position to ensure consistent conflict resolution
+    # (The first mutation encountered that occupies a position is kept)
+    sorted_mutations = sorted(mutations, key=lambda x: x["start"])
+
+    for mut in sorted_mutations:
+        start = mut["start"]
+        end = mut.get("end", start)  # Default end to start if not present
+        current_range = set(range(start, end + 1))
+
+        if not affected_indices.isdisjoint(current_range):
+            print(
+                f"\t-!: Omitting mutation {mut['id']} due to conflicts in {', '.join([m['id'] for m in sorted_mutations])}."
+            )
+            continue
+
+        affected_indices.update(current_range)
+        valid_mutations.append(mut)
+
+    return valid_mutations
+
+
+def alter_sequence(
+    sequence: np.ndarray, y_true: np.ndarray, mutations: List[str]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Alters a transcript sequence based on a list of HGVS r. notations.
+    This version accepts and returns NumPy arrays.
+    """
+    if not mutations:
+        # Return copies of the original NumPy arrays even if no mutations
+        return sequence.copy(), y_true.copy()
+
+    # 1. Create copies to prevent modifying the original data
+    seq_arr = sequence.copy()
+    y_arr = y_true.copy()
+
+    # 2. Parse all mutations into a list of dictionaries
+    parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
+
+    # 3. Validate mutations to remove any that conflict
+    validated_muts = validate_mutations(
+        parsed_muts
+    )  # Use the non-Polars validate_mutations
+    if not validated_muts:
+        return seq_arr, y_arr
+
+    # 4. Sort valid mutations by start position descending to apply from end to start
+    sorted_muts = sorted(validated_muts, key=lambda x: x["start"], reverse=True)
+
+    # 5. Apply each mutation
+    for mut in sorted_muts:
+        start_idx = mut["start"]
+        end_idx = mut.get("end", start_idx)
+        if end_idx is None:  # Ensure end_idx is not None
+            end_idx = start_idx
+
+        if mut["type"] == "sub":
+            # For NumPy arrays, direct element assignment works
+            if (
+                IDX_DNA_DICT.get(seq_arr[start_idx].item(), "N") != mut["ref"]
+            ):  # .item() to get scalar from 0-d array
+                raise ValueError(
+                    f"Reference base mismatch at pos {start_idx + 1} for {mut['id']}"
+                )
+            seq_arr[start_idx] = DNA_IDX_DICT[mut["alt"]]
+
+        elif mut["type"] == "del":
+            # Use np.delete for deletions
+            seq_arr = np.delete(seq_arr, np.s_[start_idx : end_idx + 1])
+            y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
+
+        elif mut["type"] == "dup":
+            # Duplicate segment and insert
+            seq_segment = seq_arr[start_idx : end_idx + 1]
+            y_segment = np.full(len(seq_segment), False, dtype=bool)
+
+            # Use np.insert. Inserts BEFORE the given index.
+            # We want to insert AFTER end_idx, so at index end_idx + 1.
+            seq_arr = np.insert(seq_arr, end_idx + 1, seq_segment)
+            y_arr = np.insert(y_arr, end_idx + 1, y_segment)
+
+        elif mut["type"] == "ins":
+            # Insert new sequence
+            alt_seq_np = np.array(
+                [DNA_IDX_DICT[base] for base in mut["alt"]], dtype=seq_arr.dtype
+            )
+            alt_y_np = np.full(len(alt_seq_np), False, dtype=bool)
+
+            # Insert at start_idx + 1 (i.e., after start_idx)
+            seq_arr = np.insert(seq_arr, start_idx + 1, alt_seq_np)
+            y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
+
+    return seq_arr, y_arr
+
+
+def alter_ribo_counts(
+    ribo: np.ndarray, y_true: np.ndarray, mutations: List[str]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Alters a transcript ribo_counts based on a list of HGVS r. notations.
+    This version accepts and returns NumPy arrays.
+    """
+    if not mutations:
+        # Return copies of the original NumPy arrays even if no mutations
+        return ribo.copy(), y_true.copy()
+
+    # 1. Create copies to prevent modifying the original data
+    ribo_arr = ribo.copy()
+    y_arr = y_true.copy()
+
+    # 2. Parse all mutations into a list of dictionaries
+    parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
+
+    # 3. Validate mutations to remove any that conflict
+    validated_muts = validate_mutations(
+        parsed_muts
+    )  # Use the non-Polars validate_mutations
+    if not validated_muts:
+        return ribo_arr, y_arr
+
+    # 4. Sort valid mutations by start position descending to apply from end to start
+    sorted_muts = sorted(validated_muts, key=lambda x: x["start"], reverse=True)
+
+    # 5. Apply each mutation
+    for mut in sorted_muts:
+        start_idx = mut["start"]
+        end_idx = mut.get("end", start_idx)
+        if end_idx is None:  # Ensure end_idx is not None
+            end_idx = start_idx
+
+        if mut["type"] == "sub":
+            continue
+
+        elif mut["type"] == "del":
+            # Use np.delete for deletions
+            ribo_arr = np.delete(ribo_arr, np.s_[start_idx : end_idx + 1], 0)
+            y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
+
+        elif mut["type"] == "dup":
+            # Duplicate segment and insert
+            ribo_segment = np.full(
+                ribo_arr[start_idx : end_idx + 1].shape, 0, dtype=ribo_arr.dtype
+            )
+            y_segment = np.full(len(ribo_segment), False, dtype=bool)
+
+            # Use np.insert. Inserts BEFORE the given index.
+            # We want to insert AFTER end_idx, so at index end_idx + 1.
+            ribo_arr = np.insert(ribo_arr, end_idx + 1, ribo_segment, axis=0)
+            y_arr = np.insert(y_arr, end_idx + 1, y_segment)
+
+        elif mut["type"] == "ins":
+            # Insert new sequence
+            ribo_segment = np.full(
+                ribo_arr[start_idx : end_idx + 1].shape, 0, dtype=ribo_arr.dtype
+            )
+            alt_y_np = np.full(len(ribo_segment), False, dtype=bool)
+
+            # Insert at start_idx + 1 (i.e., after start_idx)
+            ribo_arr = np.insert(ribo_arr, start_idx + 1, ribo_segment, axis=0)
+            y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
+
+    return ribo_arr, y_arr
+
+
+def apply_mutations_to_seq(
+    sequence: List[int], mutations: List[str]
+) -> Tuple[list, list, list]:
+    """
+    Applies a list of HGVS mutations to a single sequence.
+    This is a pure function designed to be used within a Polars 'apply' context.
+
+    Args:
+        sequence: The original sequence as a list of integers.
+        mutations: A list of HGVS r. notation strings for that sequence.
+
+    Returns:
+        The mutated sequence as a list of integers, and a list of indices.
+    """
+    if not mutations or len(sequence) == 0:
+        # if no mutations, return empty lists
+        return [], [], []
+
+    seq_arr = np.array(sequence, dtype=np.int8)
+    int_arr = np.arange(len(seq_arr), dtype=np.int32)
+
+    try:
+        parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
+        validated_muts = validate_mutations(parsed_muts)
+
+        if not validated_muts:
+            return [], [], []
+
+        sorted_muts = sorted(validated_muts, key=lambda x: x["start"], reverse=True)
+
+        for mut in sorted_muts:
+            start_idx = mut["start"]
+            end_idx = mut.get("end", start_idx)
+
+            if mut["type"] == "sub":
+                seq_arr[start_idx] = DNA_IDX_DICT[mut["alt"]]
+            elif mut["type"] == "del":
+                seq_arr = np.delete(seq_arr, np.s_[start_idx : end_idx + 1])
+                int_arr = np.delete(int_arr, np.s_[start_idx : end_idx + 1])
+            elif mut["type"] == "dup":
+                seq_segment = seq_arr[start_idx : end_idx + 1]
+                seq_arr = np.insert(seq_arr, end_idx + 1, seq_segment)
+                int_arr = np.insert(
+                    int_arr,
+                    start_idx,
+                    np.full(len(seq_segment), int_arr[start_idx]),
+                )
+            elif mut["type"] == "ins":
+                alt_seq_np = np.array(
+                    [DNA_IDX_DICT[base] for base in mut["alt"]], dtype=seq_arr.dtype
+                )
+                seq_arr = np.insert(seq_arr, start_idx + 1, alt_seq_np)
+                int_arr = np.insert(
+                    int_arr, start_idx, np.full(len(alt_seq_np), int_arr[start_idx])
+                )
+
+    except Exception as e:
+        return [], [], []
+
+    passed_mutations = [s["id"] for s in sorted_muts]
+    mutation_mask = np.isin(mutations, passed_mutations) * 1
+
+    return seq_arr.tolist(), int_arr.tolist(), mutation_mask.tolist()
 
 
 def get_str2str_idx_map(source, dest):

@@ -4,6 +4,7 @@ import yaml
 import argparse
 import importlib
 import numpy as np
+import polars as pl
 from typing import cast
 from importlib.resources import files
 
@@ -80,6 +81,19 @@ class Parser(argparse.ArgumentParser):
             "multiple samples by listing a DICT grouping sample IDs together, in which case it is recommended to define "
             "in YAML config file. --samples can also be used to process one sample of your database, e.g., "
             "in combination with running --parallel.",
+        )
+        input_parse.add_argument(
+            "--mut_list_path",
+            type=str,
+            help="Path to file containing a list of HGVS mutations formatted in reference to the transcript ID, e.g. "
+            "'ENST000...:r.5A>T.",
+        )
+        input_parse.add_argument(
+            "--only_mut_transcripts",
+            action="store_true",
+            help="TIS Transformer: Only process transcripts that have mutations in the provided mutation list."
+            " Does not affect RiboTIE, as mutations are only applied for building ORFs and metadata collection "
+            " of the results. See the documentation for more information.",
         )
         input_parse.add_argument(
             "--parallel",
@@ -660,4 +674,20 @@ class Parser(argparse.ArgumentParser):
                 args.folds = args.trained_model["folds"]
 
         print(args, end="\n\n")
+
+        # set up mut dictionary
+        if args.mut_list_path is not None:
+            mut_df = pl.read_csv(args.mut_list_path, separator="\t", has_header=False)
+            args.mut_dict = dict(
+                mut_df.with_columns(
+                    pl.col("column_1").str.split(":r").list[0].alias("tr_id")
+                )
+                .group_by("tr_id")
+                .agg("column_1")
+                .iter_rows()
+            )
+            args.mut_dict = {a.encode(): b for a, b in args.mut_dict.items()}
+        else:
+            args.mut_dict = {}
+
         return args

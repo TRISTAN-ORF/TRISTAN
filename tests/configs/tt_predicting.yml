@@ -1,6 +1,6 @@
 test_frac : 0.5
 no_backup : true
-prob_cutoff : 0.70
+prob_cutoff : 0.60
 max_epochs : 2
 ########################################################
 ## assembly and reference files of GENOME.

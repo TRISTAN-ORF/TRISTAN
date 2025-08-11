@@ -1,9 +1,14 @@
 import h5py
 import numpy as np
-import torch
+import polars as pl
 from h5max import load_sparse_matrix
+import torch
 from torch.utils.data import DataLoader
-import pytorch_lightning as pl
+from pytorch_lightning import LightningDataModule
+from pdb import set_trace
+
+np.set_printoptions(threshold=np.inf)
+from transcript_transformer.util_functions import alter_sequence
 
 
 def collate_fn(batch):
@@ -143,7 +148,7 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
         return np.split(data, l)
 
 
-class h5pyDataModule(pl.LightningDataModule):
+class h5pyDataModule(LightningDataModule):
     def __init__(
         self,
         h5_path,
@@ -153,6 +158,8 @@ class h5pyDataModule(pl.LightningDataModule):
         seqn_path,
         use_seq,
         grouped_ribo_ids,
+        mut_dict,
+        only_mut_transcripts,
         offsets,
         train=[],
         val=[],
@@ -167,14 +174,16 @@ class h5pyDataModule(pl.LightningDataModule):
         parallel=False,
     ):
         super().__init__()
-        self.grouped_ribo_ids = grouped_ribo_ids
-        self.offsets = offsets
-        self.use_seq = use_seq
-        self.y_path = y_path
-        self.tr_id_path = tr_id_path
         self.h5_path = h5_path
         self.exp_path = exp_path
+        self.y_path = y_path
+        self.tr_id_path = tr_id_path
         self.seqn_path = seqn_path
+        self.use_seq = use_seq
+        self.grouped_ribo_ids = grouped_ribo_ids
+        self.mut_dict = mut_dict
+        self.only_mut_transcripts = only_mut_transcripts
+        self.offsets = offsets
         train = [t.encode("ascii") if type(t) is str else t for t in train]
         val = [t.encode("ascii") if type(t) is str else t for t in val]
         test = [t.encode("ascii") if type(t) is str else t for t in test]
@@ -197,12 +206,18 @@ class h5pyDataModule(pl.LightningDataModule):
         self.leaky_frac = leaky_frac
         self.collate_fn = collate_fn
         self.parallel = parallel
+        self.global_int = 1  # global masks to use as
 
     def setup(self, stage=None):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
         self.seqn_list = np.array(f[self.seqn_path])
         self.transcript_lens = np.array(f["transcript_len"])
         f.file.close()
+        if self.only_mut_transcripts and (len(self.mut_dict) > 0):
+            self.global_int += 1  # add mut id mask to global masks used for pred.
+            self.cond["global"]["transcript_id"] = lambda x: np.isin(
+                x, list(self.mut_dict.keys())
+            )
         # evaluate conditions
         global_mask, global_masks, group_masks = self.evaluate_masks()
         # Identical mask over the samples applied to all datasets
@@ -248,7 +263,9 @@ class h5pyDataModule(pl.LightningDataModule):
             seqn_mask = np.isin(self.seqn_list, self.seqns["val"])
             if self.strict_validation:
                 # global_masks[0] is transcript length mask
-                val_mask = np.logical_and(seqn_mask, global_masks[0])
+                val_mask = np.logical_and.reduce(
+                    [seqn_mask, *global_masks[: self.global_int]]
+                )
                 self.val_idx, self.val_len, self.val_idx_adj, self.val_groups = (
                     self.prepare_sets(val_mask, dummy_mask)
                 )
@@ -264,7 +281,9 @@ class h5pyDataModule(pl.LightningDataModule):
             print(f"\t -- Test set seqnames: {test_seqnames}")
             seqn_mask = np.isin(self.seqn_list, self.seqns["test"])
             # Only mask transcript lengths instead of all
-            test_mask = np.logical_and(seqn_mask, global_masks[0])
+            test_mask = np.logical_and.reduce(
+                [seqn_mask, *global_masks[: self.global_int]]
+            )
             self.te_idx, self.te_len, self.te_idx_adj, self.te_groups = (
                 self.prepare_sets(test_mask, dummy_mask)
             )
@@ -311,10 +330,14 @@ class h5pyDataModule(pl.LightningDataModule):
             # leaky frac allows percentage-wise randomly selected samples to be included
             # in the training set, even if they do not pass the filtering condition
             # excluding transcript length mask
-            if (key != "transcript_len") and (self.leaky_frac > 0):
+            if (key not in ["transcript_len", "transcript_id"]) and (
+                self.leaky_frac > 0
+            ):
                 prob_mask = np.random.uniform(size=len(mask)) > (1 - self.leaky_frac)
                 mask[prob_mask] = True
-            global_masks.append(mask)
+                global_masks.append(mask)
+            else:
+                global_masks.insert(0, mask)
         global_mask = np.logical_and.reduce(global_masks)
         # Masks over the samples applied per group of datasets
         group_masks = {}
@@ -418,6 +441,7 @@ class h5pyDataModule(pl.LightningDataModule):
             indices, lengths = local_shuffle(self.tr_idx, self.tr_len)
             idx_group_order = self.train_groups
             idx_adj = self.tr_idx_adj
+            mut_dict = {}
         elif stage == "val":
             indices, lengths, idx_group_order = (
                 self.val_idx,
@@ -425,9 +449,11 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.val_groups,
             )
             idx_adj = self.val_idx_adj
+            mut_dict = {}
         elif stage in ["test", "predict"]:
             indices, lengths, idx_group_order = self.te_idx, self.te_len, self.te_groups
             idx_adj = self.te_idx_adj
+            mut_dict = self.mut_dict
         else:
             raise ValueError(
                 f"Invalid stage: {stage}. Must be 'train', 'val', 'test', or 'predict'."
@@ -447,6 +473,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.tr_id_path,
                 self.use_seq,
                 self.grouped_ribo_ids,
+                mut_dict,
                 self.offsets,
                 idx_adj,
                 batches,
@@ -513,6 +540,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         tr_id_path,
         use_seq,
         grouped_ribo_ids,
+        mut_dict,
         offsets,
         idx_adj,
         batches,
@@ -525,6 +553,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         self.tr_id_path = tr_id_path
         self.use_seq = use_seq
         self.grouped_ribo_ids = grouped_ribo_ids
+        self.mut_dict = mut_dict
         self.offsets = offsets
         self.idx_adj = idx_adj
         self.batches = batches
@@ -564,20 +593,28 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             # get adjusted set_idx if multiple datasets are used
             set_idx = int(dl_idx % self.idx_adj)
             group = self.idx_group_order[dl_idx // self.idx_adj]
+            tr_id = self.f[self.tr_id_path][set_idx]
+            y_true = self.f[self.y_path][set_idx]
             x_dict = {}
             # get seq data
             if self.use_seq:
-                x_dict["seq"] = self.get_seq_data(set_idx)
+                seq = self.get_seq_data(set_idx)
+                if tr_id in self.mut_dict.keys():
+                    # apply mutations to sequence
+                    seq, y_true = alter_sequence(seq, y_true, self.mut_dict[tr_id])
+                x_dict["seq"] = seq
             # get ribo data
             else:
-                x_dict["ribo"] = self.get_ribo_data(set_idx, group)
+                ribo = self.get_ribo_data(set_idx, group)
+                if tr_id in self.mut_dict.keys():
+                    # apply mutations to sequence
+                    ribo, y_true = alter_ribo_counts(ribo, y_true, self.mut_dict[tr_id])
+                x_dict["ribo"] = ribo
 
             # get transcript IDs
-            x_ids.append(
-                group.encode() + "|".encode() + self.f[self.tr_id_path][set_idx]
-            )
+            x_ids.append(group.encode() + "|".encode() + tr_id)
             xs.append(x_dict)
-            ys.append(self.f[self.y_path][set_idx])
+            ys.append(y_true)
 
         return [x_ids, xs, ys]
 

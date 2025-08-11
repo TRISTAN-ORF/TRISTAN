@@ -247,6 +247,9 @@ def main():
         df, df_filt, df_novel = construct_output_table(
             h5_path=args.h5_path,
             out_prefix=out_prefix,
+            mut_dict=args.mut_dict,
+            output=out,
+            is_rt_output=True,
             prob_cutoff=args.prob_cutoff,
             correction=not args.no_correction,
             dist=args.distance,
@@ -254,7 +257,6 @@ def main():
             min_ORF_len=args.min_ORF_len,
             remove_duplicates=not args.keep_duplicates,
             exclude_invalid_TTS=not args.include_invalid_TTS,
-            ribo_output=out,
             grouped_ribo_ids=args.grouped_ribo_ids,
             parallel=args.parallel,
             return_ORF_coords=args.return_ORF_coords,

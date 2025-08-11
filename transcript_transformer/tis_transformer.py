@@ -211,6 +211,9 @@ def main():
     df, df_filt, df_novel = construct_output_table(
         h5_path=args.h5_path,
         out_prefix=args.out_prefix,
+        mut_dict=args.mut_dict,
+        output=out,
+        is_rt_output=False,
         prob_cutoff=args.prob_cutoff,
         start_codons=args.start_codons,
         min_ORF_len=args.min_ORF_len,

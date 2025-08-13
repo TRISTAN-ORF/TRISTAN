@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transcript-transformer"
-version = "1.0.0"
+version = "1.0.1"
 description = "Transformers for Transcripts"
 readme = "README.md"
 requires-python = ">=3.10"

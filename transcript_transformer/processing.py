@@ -767,7 +767,7 @@ def filter_CDS_variants(df):
         [
             "N-terminal truncation",
             "N-terminal extension",
-            "C-terminal trunctation",
+            "C-terminal truncation",
             "C-terminal extension",
         ]
     )

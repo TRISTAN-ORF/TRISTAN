@@ -8,7 +8,7 @@ import heapq
 from datetime import datetime
 from fasta_reader import read_fasta
 from typing import List, Dict, Tuple
-
+from pdb import set_trace
 from transcript_transformer import (
     CDN_PROT_DICT,
     PROT_IDX_DICT,
@@ -212,15 +212,15 @@ def find_optimal_folds(seqn_size_dict, test=0.2, val=0.2):
     return folds
 
 
-def merge_outputs(prefix, keys):
+def merge_outputs(prefix, suffix, keys):
     outputs = []
-    for path in [f"{prefix}_f{i}.npy" for i in keys]:
+    for path in [f"{prefix}_f{i}{suffix}.npy" for i in keys]:
         output = np.load(path, allow_pickle=True)
         if len(output) > 0:
             outputs.append(output)
     out = np.vstack(outputs)
 
-    np.save(f"{prefix}.npy", out)
+    np.save(f"{prefix}{suffix}.npy", out)
 
 
 def load_args(path, args):
@@ -446,33 +446,36 @@ def find_distant_exon_coord(ref_coord, distance, strand, exons):
 def parse_hgvs_mutation(hgvs: str) -> Dict:
     """Parses an HGVS r. notation suffix into a structured dictionary."""
     hgvs_suffix = hgvs.split(":")[-1]
-    for mut_type, pattern in HGVS_PATTERNS.items():
-        if match := pattern.search(hgvs_suffix):
-            groups = match.groups()
-            if mut_type == "sub":
-                return {
-                    "id": hgvs,
-                    "type": "sub",
-                    "start": int(groups[0]) - 1,
-                    "ref": groups[1],
-                    "alt": groups[2],
-                }
-            elif "del" in mut_type:
-                start = int(groups[0]) - 1
-                end = int(groups[1]) - 1 if len(groups) > 1 else start
-                return {"id": hgvs, "type": "del", "start": start, "end": end}
-            elif "dup" in mut_type:
-                start = int(groups[0]) - 1
-                end = int(groups[1]) - 1 if len(groups) > 1 else start
-                return {"id": hgvs, "type": "dup", "start": start, "end": end}
-            elif mut_type == "ins":
-                return {
-                    "id": hgvs,
-                    "type": "ins",
-                    "start": int(groups[0]) - 1,
-                    "alt": groups[2],
-                }
-    raise ValueError(f"Unsupported HGVS notation: {hgvs}")
+    try:
+        for mut_type, pattern in HGVS_PATTERNS.items():
+            if match := pattern.search(hgvs_suffix):
+                groups = match.groups()
+                if mut_type == "sub":
+                    return {
+                        "id": hgvs,
+                        "type": "sub",
+                        "start": int(groups[0]) - 1,
+                        "ref": groups[1],
+                        "alt": groups[2],
+                    }
+                elif "del" in mut_type:
+                    start = int(groups[0]) - 1
+                    end = int(groups[1]) - 1 if len(groups) > 1 else start
+                    return {"id": hgvs, "type": "del", "start": start, "end": end}
+                elif "dup" in mut_type:
+                    start = int(groups[0]) - 1
+                    end = int(groups[1]) - 1 if len(groups) > 1 else start
+                    return {"id": hgvs, "type": "dup", "start": start, "end": end}
+                elif mut_type == "ins":
+                    return {
+                        "id": hgvs,
+                        "type": "ins",
+                        "start": int(groups[0]) - 1,
+                        "alt": groups[2],
+                    }
+    except:
+        print(f"Omitting mutation {hgvs} due to unsupported HGVS notation.")
+        return {}
 
 
 def validate_mutations(mutations: List[Dict]) -> List[Dict]:
@@ -518,6 +521,8 @@ def alter_sequence(
 
     # 2. Parse all mutations into a list of dictionaries
     parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
+    # remove empty dicts
+    parsed_muts = [m for m in parsed_muts if m]
 
     # 3. Validate mutations to remove any that conflict
     validated_muts = validate_mutations(
@@ -592,6 +597,8 @@ def alter_ribo_counts(
 
     # 2. Parse all mutations into a list of dictionaries
     parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
+    # remove empty dicts
+    parsed_muts = [m for m in parsed_muts if m]
 
     # 3. Validate mutations to remove any that conflict
     validated_muts = validate_mutations(

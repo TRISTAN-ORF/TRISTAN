@@ -8,7 +8,7 @@ from pytorch_lightning import LightningDataModule
 from pdb import set_trace
 
 np.set_printoptions(threshold=np.inf)
-from transcript_transformer.util_functions import alter_sequence
+from transcript_transformer.util_functions import alter_sequence, alter_ribo_counts
 
 
 def collate_fn(batch):
@@ -159,7 +159,6 @@ class h5pyDataModule(LightningDataModule):
         use_seq,
         grouped_ribo_ids,
         mut_dict,
-        only_mut_transcripts,
         offsets,
         train=[],
         val=[],
@@ -182,7 +181,6 @@ class h5pyDataModule(LightningDataModule):
         self.use_seq = use_seq
         self.grouped_ribo_ids = grouped_ribo_ids
         self.mut_dict = mut_dict
-        self.only_mut_transcripts = only_mut_transcripts
         self.offsets = offsets
         train = [t.encode("ascii") if type(t) is str else t for t in train]
         val = [t.encode("ascii") if type(t) is str else t for t in val]
@@ -213,7 +211,7 @@ class h5pyDataModule(LightningDataModule):
         self.seqn_list = np.array(f[self.seqn_path])
         self.transcript_lens = np.array(f["transcript_len"])
         f.file.close()
-        if self.only_mut_transcripts and (len(self.mut_dict) > 0):
+        if self.mut_dict:
             self.global_int += 1  # add mut id mask to global masks used for pred.
             self.cond["global"]["transcript_id"] = lambda x: np.isin(
                 x, list(self.mut_dict.keys())

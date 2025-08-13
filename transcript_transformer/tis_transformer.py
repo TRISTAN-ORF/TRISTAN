@@ -119,6 +119,10 @@ def main():
     if args.data:
         prtime("End of pipeline (omit --data to run full pipeline)...", "\n")
         return 0
+    if args.mut_dict:
+        mut_suff = ".mut"
+    else:
+        mut_suff = ""
 
     # --- Determine folds and contigs if relevant ---
     if args.folds is None:
@@ -138,7 +142,7 @@ def main():
 
     # --- Training or Prediction ---
     prtime(f"Evaluating genome sequence data...", "\n\n")
-    result_file = f"{args.out_prefix}.npy"
+    result_file = f"{args.out_prefix}{mut_suff}.npy"
     keep_preds = os.path.isfile(result_file) and (not args.overwrite_preds)
     if ("trained_model" in args) and keep_preds:
         print(f"\t -- TIS Transformer output present: {result_file}")
@@ -160,14 +164,14 @@ def main():
         args_set = deepcopy(args)
         args_set.__dict__.update(fold)
         # set output path
-        args_set.out_prefix = "_".join([f"{args_set.out_prefix}", f"f{i}"])
+        args_set.out_prefix = f"{args_set.out_prefix}_f{i}{mut_suff}"
         if req_train:
             prtime(f"Training model — Fold {i} ...", "\n")
             # train model
             trainer, model = train(
                 args_set, test_model=False, enable_model_summary=False
             )
-            mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.tt")
+            mv_ckpt_to_out_dir(trainer, f"{args.out_prefix}_f{i}.tt")
             rel_path = os.path.basename(args_set.out_prefix)
             args.folds[i]["transfer_checkpoint"] = f"{rel_path}.tt.ckpt"
             prtime(f"Predicting samples — Fold {i} ...", "\n")
@@ -181,10 +185,10 @@ def main():
             prtime(f"Predicting samples — Fold {i} ...", "\n")
             predict(args_set)
     if len(args.folds) > 0:
-        prtime(f"Merging predictions to {args.out_prefix}.npy...", "\n")
-        merge_outputs(args.out_prefix, args.folds.keys())
+        prtime(f"Merging predictions to {args.out_prefix}{mut_suff}.npy...", "\n")
+        merge_outputs(f"{args.out_prefix}", f"{mut_suff}", args.folds.keys())
         # remove independent fold outputs
-        [os.remove(f"{args.out_prefix}_f{i}.npy") for i in args.folds.keys()]
+        [os.remove(f"{args.out_prefix}_f{i}{mut_suff}.npy") for i in args.folds.keys()]
         # Save params file
         if req_train:
             args.folds[0]["test"] = []
@@ -193,10 +197,10 @@ def main():
                 yaml.dump(save_dict, f, default_flow_style=False)
 
     # load predictions
-    out = np.load(f"{args.out_prefix}.npy", allow_pickle=True)
+    out = np.load(f"{args.out_prefix}{mut_suff}.npy", allow_pickle=True)
 
     # --- Sort and transfer predictions to h5 file ---
-    if not keep_preds:
+    if (not keep_preds) and (not args.mut_dict):
         prtime(f"Saving predictions to {args.h5_path}...", "\n")
         tr_ids = np.hstack([o[0] for o in out])
         pred_list = [o[1] for o in out]
@@ -207,10 +211,12 @@ def main():
             if os.path.exists(args.backup_path):
                 integrate_seq_predictions(args.backup_path, aligned_pred_list)
 
+    prtime(f"Constructing output table for TIS Transformer...", "\n\n")
     # --- Result Processing ---
+    out_prefix = f"{args.out_prefix}{mut_suff}"
     df, df_filt, df_novel = construct_output_table(
         h5_path=args.h5_path,
-        out_prefix=args.out_prefix,
+        out_prefix=out_prefix,
         mut_dict=args.mut_dict,
         output=out,
         is_rt_output=False,
@@ -222,7 +228,7 @@ def main():
     )
     if df is not None:
         names = ["TIS Transformer Redundant set", "TIS Transformer"]
-        paths = [args.out_prefix + ".redundant", args.out_prefix]
+        paths = [out_prefix + ".redundant", out_prefix]
         multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
         os.makedirs(multiqc_path, exist_ok=True)
         for df, name, path in zip([df, df_filt], names, paths):
@@ -234,9 +240,7 @@ def main():
             )
             out = os.path.join(multiqc_path, os.path.basename(path))
             create_multiqc_reports(df, out, "tis_transformer", name)
-        csv_to_gtf(
-            args.h5_path, df_novel, args.out_prefix + ".novel", "TIS_Transformer"
-        )
+        csv_to_gtf(args.h5_path, df_novel, out_prefix + ".novel", "TIS_Transformer")
 
 
 def align_to_h5_ids(h5_path, tr_ids, data_list, dtype=np.float32):

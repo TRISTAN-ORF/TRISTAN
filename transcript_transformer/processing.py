@@ -169,15 +169,15 @@ def construct_output_table(
     f_headers = f_headers.filter(~f_headers.is_in(["riboseq", "tis"]))
     if "tis_transformer_score" in f_headers:
         has_stored_tt_output = True
-        tool_scores.append("tis_transformer_score")
     else:
         has_stored_tt_output = False
     f_headers = f_headers.filter(f_headers != "tis_transformer_score")
 
     if (output is not None) and is_rt_output:
-        prefix = "ribotie_"
         tool_scores.insert(0, "ribotie_score")
+        prefix = "ribotie_"
     else:
+        tool_scores.insert(0, "tis_transformer_score")
         prefix = "tis_transformer_"
         if output is None:
             assert has_stored_tt_output, "No model predictions found"
@@ -189,7 +189,6 @@ def construct_output_table(
         group = output[0][0].split(b"|")[0].decode()
         # Map transcript IDs to h5 indices
         pred_to_h5_args = get_str2str_idx_map(tr_ids, f_tr_ids)
-        tool_headers = tool_scores + [f"{prefix}rank"]
         df_initial = pl.DataFrame(
             {
                 "transcript_id": tr_ids,
@@ -203,12 +202,16 @@ def construct_output_table(
 
         df_initial = df_initial.with_columns(h5_idx=pl.lit(pred_to_h5_args))
 
-        if (is_rt_output) and has_stored_tt_output:
+        if (is_rt_output) and has_stored_tt_output and (not mut_dict):
+            tool_scores.append("tis_transformer_score")
             tt_scores = f["transcript/tis_transformer_score"][:][pred_to_h5_args]
             df_initial = df_initial.with_columns(
-                tis_transformer_score=pl.lit(tt_scores).cast(pl.List(pl.Float32))
+                tis_transformer_score=pl.lit(tt_scores).map_elements(
+                    list, pl.List(pl.Float32)
+                )
             )
 
+        tool_headers = tool_scores + [f"{prefix}rank"]
         ribo_out_headers = [] if not is_rt_output else RIBO_OUT_HEADERS
         out_headers = tool_headers + STANDARD_OUT_HEADERS + ribo_out_headers + xtr_heads
 
@@ -234,7 +237,7 @@ def construct_output_table(
     pos_args = pl.col(f"{prefix}score").list.eval((el_gt_th & el_not_nan).arg_true())
     df_filtered = (
         df_initial.sort("h5_idx")
-        .with_columns(TIS_idx=pos_args)
+        .with_columns(TIS_idx=pos_args.cast(pl.List(pl.Int64)))
         .filter(pl.col("TIS_idx").list.len() > 0)
         .with_columns(
             **{
@@ -243,7 +246,6 @@ def construct_output_table(
             },
         )
     )
-
     # Top K prediction filtering (when necessary)
     if df_filtered.select(pl.col("TIS_idx").list.len().sum()).item() > max_preds:
         prtime(f"Too many predictions, filtering to top {max_preds}...", "\t\t-- ")
@@ -335,13 +337,18 @@ def construct_output_table(
         )
         # atg_codon_indices start at 0, upstr_corr modifies the indicies to be relative
         corr_distances = (atg_codon_indices * 3) - upstr_corr
-        closest_distance_idx = corr_distances.list.eval(
+        # Fill empty lists with 0 values
+        corr_distances_filled = (
+            pl.when(corr_distances.list.len() == 0).then([0]).otherwise(corr_distances)
+        )
+
+        closest_distance_idx = corr_distances_filled.list.eval(
             pl.element().abs()
         ).list.arg_min()  # This arg_min is fine
-        best_correction = corr_distances.list.get(closest_distance_idx).fill_null(0)
+        best_correction = corr_distances_filled.list.get(closest_distance_idx)
         df = df.with_columns(
             TIS_idx=pl.col("TIS_idx") + best_correction,
-            correction=corr_distances.list.get(closest_distance_idx),
+            correction=corr_distances_filled.list.get(closest_distance_idx),
         )
 
         if remove_duplicates:
@@ -621,10 +628,7 @@ def construct_output_table(
     df_novel = df_filt.filter(pl.col("ORF_type") != "annotated CDS")
 
     # --- Save to csv ---
-    mut = ".mut" if mut_dict else ""
-    for df_, label in zip(
-        [df, df_filt, df_novel], [f"{mut}.redundant", f"{mut}", f"{mut}.novel"]
-    ):
+    for df_, label in zip([df, df_filt, df_novel], [f".redundant", f"", f".novel"]):
         save_output_table(df_, out_prefix, label, prefix, out_headers)
 
     return df, df_filt, df_novel

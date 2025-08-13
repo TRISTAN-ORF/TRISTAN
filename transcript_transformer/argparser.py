@@ -86,14 +86,7 @@ class Parser(argparse.ArgumentParser):
             "--mut_list_path",
             type=str,
             help="Path to file containing a list of HGVS mutations formatted in reference to the transcript ID, e.g. "
-            "'ENST000...:r.5A>T.",
-        )
-        input_parse.add_argument(
-            "--only_mut_transcripts",
-            action="store_true",
-            help="TIS Transformer: Only process transcripts that have mutations in the provided mutation list."
-            " Does not affect RiboTIE, as mutations are only applied for building ORFs and metadata collection "
-            " of the results. See the documentation for more information.",
+            "'ENST000...:r.5A>T. Only mutated transcripts are processed when --mut_list_path is provided.",
         )
         input_parse.add_argument(
             "--parallel",

@@ -82,6 +82,10 @@ def main():
     if args.data:
         prtime("End of pipeline (omit --data to run full pipeline)...", "\n")
         return 0
+    if args.mut_dict:
+        mut_suff = ".mut"
+    else:
+        mut_suff = ""
 
     # --- Determine folds and contigs if relevant ---
     if args.pretrain and (args.folds is None):
@@ -134,7 +138,7 @@ def main():
             rel_path = os.path.basename(args_set.out_prefix)
             args.folds[i]["transfer_checkpoint"] = f"{rel_path}.rt.ckpt"
         prtime(f"Merging predictions for '{args.out_prefix}_pretrain.npy'...", "\n")
-        merge_outputs(f"{args.out_prefix}_pretrain", args.folds.keys())
+        merge_outputs(f"{args.out_prefix}_pretrain_", "", args.folds.keys())
         # remove independent fold outputs
         [os.remove(f"{args.out_prefix}_pretrain_f{i}.npy") for i in args.folds.keys()]
         args.folds[0]["test"] = []
@@ -161,7 +165,7 @@ def main():
             args_set.cond["grouped"] = {group: args.cond["grouped"][group]}
 
             model_file = f"{args.out_prefix}_{group}_params.rt.yml"
-            result_file = f"{args.out_prefix}_{group}.npy"
+            result_file = f"{args.out_prefix}_{group}{mut_suff}.npy"
             has_model_output = os.path.isfile(result_file)
             has_model_file = os.path.isfile(model_file)
             # if predicting from trained model, model params is not expected
@@ -199,19 +203,20 @@ def main():
                 folds = args.trained_model["folds"]
             args.folds = deepcopy(folds)
             # iterate models
+            out_prefix = f"{args.out_prefix}_{group}"
             for i, fold in folds.items():
                 args_set.__dict__.update(fold)
                 args_set.transfer_checkpoint = os.path.join(
                     os.fspath(args.model_dir), args_set.transfer_checkpoint
                 )
-                args_set.out_prefix = f"{args.out_prefix}_{group}_f{i}"
+                args_set.out_prefix = f"{out_prefix}_f{i}{mut_suff}"
                 if finetune:
                     prtime(f"Finetuning model for {group} — Fold {i} ...", "\n")
                     print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
                     trainer, model = train(
                         args_set, test_model=False, enable_model_summary=False
                     )
-                    mv_ckpt_to_out_dir(trainer, f"{args_set.out_prefix}.rt")
+                    mv_ckpt_to_out_dir(trainer, f"{out_prefix}_f{i}.rt")
                     # set output path
                     rel_path = os.path.basename(args_set.out_prefix)
                     args.folds[i]["transfer_checkpoint"] = f"{rel_path}.rt.ckpt"
@@ -221,9 +226,9 @@ def main():
                     prtime(f"Predicting samples for {group} — Fold {i} ...", "\n")
                     print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
                     predict(args_set)
-            prtime(f"Merging predictions to '{args.out_prefix}_{group}.npy'...", "\n")
-            merge_outputs(f"{args.out_prefix}_{group}", folds.keys())
-            [os.remove(f"{args.out_prefix}_{group}_f{i}.npy") for i in folds.keys()]
+            prtime(f"Merging predictions to '{out_prefix}{mut_suff}.npy'...", "\n")
+            merge_outputs(f"{args.out_prefix}_{group}", f"{mut_suff}", folds.keys())
+            [os.remove(f"{out_prefix}_f{i}{mut_suff}.npy") for i in folds.keys()]
             # Save params file
             if finetune:
                 args.folds[0]["test"] = []
@@ -242,8 +247,9 @@ def main():
     else:
         output_sets = [str(k) for k in args.grouped_ribo_ids.keys()]
     for output in output_sets:
-        out = np.load(f"{args.out_prefix}_{output}.npy", allow_pickle=True)
-        out_prefix = f"{args.out_prefix}_{output}"
+        out = np.load(f"{args.out_prefix}_{output}{mut_suff}.npy", allow_pickle=True)
+        out_prefix = f"{args.out_prefix}_{output}{mut_suff}"
+        prtime(f"Constructing output table for {output}...", "\n\n")
         df, df_filt, df_novel = construct_output_table(
             h5_path=args.h5_path,
             out_prefix=out_prefix,

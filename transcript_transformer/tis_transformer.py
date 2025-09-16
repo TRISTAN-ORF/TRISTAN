@@ -143,9 +143,10 @@ def main():
     # --- Training or Prediction ---
     prtime(f"Evaluating genome sequence data...", "\n\n")
     result_file = f"{args.out_prefix}{mut_suff}.npy"
-    keep_preds = os.path.isfile(result_file) and (not args.overwrite_preds)
+    has_output = os.path.isfile(result_file)
+    keep_preds = has_output and (not args.overwrite_preds)
+    print(f"\t -- TIS Transformer output {"not " if not has_output else ""}present: {result_file}")
     if ("trained_model" in args) and keep_preds:
-        print(f"\t -- TIS Transformer output present: {result_file}")
         args.folds = {}  # Basically skip future steps
         req_train = False
     elif "trained_model" in args:
@@ -225,6 +226,7 @@ def main():
         min_ORF_len=args.min_ORF_len,
         exclude_invalid_TTS=not args.include_invalid_TTS,
         return_ORF_coords=args.return_ORF_coords,
+        max_preds=args.max_preds,
     )
     if df is not None:
         names = ["TIS Transformer Redundant set", "TIS Transformer"]

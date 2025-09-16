@@ -160,7 +160,7 @@ def construct_output_table(
     grouped_ribo_ids={},
     parallel=False,
     return_ORF_coords=False,
-    max_preds=50000,
+    max_preds=100000,
 ):
     tool_scores = []
     f = h5py.File(h5_path, "r")
@@ -230,7 +230,7 @@ def construct_output_table(
     if return_ORF_coords:
         out_headers += ["ORF_coords"]
     if mut_dict:
-        out_headers += ["mutations"]
+        out_headers += ["mutations", "ref_TIS_pos", "ref_TTS_pos"]
 
     el_gt_th = pl.element() > prob_cutoff
     el_not_nan = pl.element().is_not_nan()
@@ -248,7 +248,7 @@ def construct_output_table(
     )
     # Top K prediction filtering (when necessary)
     if df_filtered.select(pl.col("TIS_idx").list.len().sum()).item() > max_preds:
-        prtime(f"Too many predictions, filtering to top {max_preds}...", "\t\t-- ")
+        prtime(f"Too many predictions, filtering to top {max_preds}...", "\t")
         # Efficiently find the score of the Nth-best prediction.
         score_th = (
             df_filtered.select(pl.col(f"{prefix}score").explode())
@@ -285,7 +285,6 @@ def construct_output_table(
         pl.col("CDS_idxs").map_elements(list, pl.List(pl.Int64)),
         pl.col(pl.Binary).cast(pl.String),
     )
-
     # apply mutations to sequence if provided, store mut_seq_map to keep track of how
     # mutations map back to original sequence in order to derive genomic coordinates
     if mut_dict:
@@ -319,9 +318,9 @@ def construct_output_table(
 
     # if non-canonical ATG, find in-frame ATGs in-case of near-miss predictions
     if correction:
-        prtime("\t --Correcting near-miss TIS predictions...", "\t")
+        prtime("Correcting near-miss TIS predictions...", "\t")
         # 1. Define the search window boundaries.
-        corr_dist = pl.lit(dist * 3)
+        corr_dist = pl.lit(pl.Series([dist * 3] * len(df))).cast(pl.Int64)
         # Calc upstream cut as multiple of 3 and not lower than 0
         upstr_corr = corr_dist.clip(0, pl.col("TIS_idx") - pl.col("TIS_idx").mod(3))
 
@@ -404,7 +403,13 @@ def construct_output_table(
         canonical_TTS_pos=pl.col("canonical_TTS_idx") + 1,
         canonical_LTS_pos=pl.col("canonical_LTS_idx") + 1,
     ).filter(pl.col("ORF_len") > 0)
-
+    if mut_dict:
+        ref_TIS_pos = pl.col("mut_seq_map").list.get(pl.col("TIS_idx")).add(1)
+        ref_TTS_pos = pl.col("mut_seq_map").list.get(pl.col("TTS_idx")).add(1)
+        df = df.with_columns(
+            ref_TIS_pos.alias("ref_TIS_pos"),
+            ref_TTS_pos.alias("ref_TTS_pos"),
+        )
     # Find exon id's and coordinates for start and stop sites
     sel_cols = [
         "ORF_id",

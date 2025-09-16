@@ -266,6 +266,7 @@ def main():
             grouped_ribo_ids=args.grouped_ribo_ids,
             parallel=args.parallel,
             return_ORF_coords=args.return_ORF_coords,
+            max_preds=args.max_preds,
         )
         if df is not None:
             ids = ["ribotie_all", "ribotie"]

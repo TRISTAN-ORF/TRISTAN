@@ -166,6 +166,12 @@ class Parser(argparse.ArgumentParser):
             action="store_true",
             help="Include full exon coordinates of predicted CDSs to result table (these are always present in GTF file).",
         )
+        pr_parse.add_argument(
+            "--max_preds",
+            type=int,
+            default=100000,
+            help="Maximum number of predictions to include in output file. If exceeded, only the top scoring predictions are kept.",
+        )
 
         return pr_parse
 

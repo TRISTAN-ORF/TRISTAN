@@ -269,12 +269,12 @@ def transcript_region_to_exons(
         stop_coord (int): stop coordinate, NOT start of stop codon for CDSs
         strand (str): strand, either + or -
         exons (list): list of exon bound coordinates following gtf file conventions.
-            E.g. positive strand: [1 2 4 5] negative strand: [4 5 1 2]
+            E.g. positive strand: [1000 2000 4000 5000] negative strand: [4000 5000 1000 2000]
         region_length (int): length of region, defaults to None, stop_coord is ignored if filled
 
     Returns:
         list: list of bound coordinates following gtf file conventions.
-            E.g. [{start_coord} 2 4 {stop_coord}]
+            E.g. [{start_coord} 2000 4000 {stop_coord}]
     """
     pos_strand = strand == "+"
     if stop_coord == -1:

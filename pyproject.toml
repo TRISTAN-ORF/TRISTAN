@@ -41,7 +41,7 @@ dependencies = [
     "pyarrow >= 18.0.0",
     "h5max == 0.3.2",
     "fasta-reader == 3.0.2",
-    "polars == 1.28",
+    "polars == 1.35.2",
     "tqdm >= 4.66.2",
     "pyfaidx == 0.8.1.1",
     "gtfparse-transcript-transformer == 2.5.0",

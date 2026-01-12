@@ -599,14 +599,16 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                 seq = self.get_seq_data(set_idx)
                 if tr_id in self.mut_dict.keys():
                     # apply mutations to sequence
-                    seq, y_true = alter_sequence(seq, y_true, self.mut_dict[tr_id])
+                    mutations = self.mut_dict.get(tr_id, [])
+                    seq, y_true = alter_sequence(seq, mutations, y_true)
                 x_dict["seq"] = seq
             # get ribo data
             else:
                 ribo = self.get_ribo_data(set_idx, group)
                 if tr_id in self.mut_dict.keys():
                     # apply mutations to sequence
-                    ribo, y_true = alter_ribo_counts(ribo, y_true, self.mut_dict[tr_id])
+                    mutations = self.mut_dict.get(tr_id, [])
+                    ribo, y_true = alter_ribo_counts(ribo, mutations, y_true)
                 x_dict["ribo"] = ribo
 
             # get transcript IDs

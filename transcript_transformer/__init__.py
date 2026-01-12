@@ -1,3 +1,6 @@
+import numpy as np
+import polars as pl
+
 # Define global variables
 
 # --- BIOLOGICAL SEQUENCE LISTS/DICTS ---
@@ -110,6 +113,22 @@ IDX_DNA_DICT = {v: k for k, v in DNA_IDX_DICT.items()}
 
 
 # --- DATA PROCESSING VARIABLES ---
+NP_TO_PL_TYPE = {
+    np.int8: pl.Int8,
+    np.int16: pl.Int16,
+    np.int32: pl.Int32,
+    np.int64: pl.Int64,
+    np.uint8: pl.UInt8,
+    np.uint16: pl.UInt16,
+    np.uint32: pl.UInt32,
+    np.uint64: pl.UInt64,
+    np.float32: pl.Float32,
+    np.float64: pl.Float64,
+    np.bool_: pl.Boolean,
+    np.str_: pl.String,
+    np.bytes_: pl.Binary,
+}
+
 REQ_HEADERS = [
     "seqname",
     "feature",
@@ -218,6 +237,15 @@ STANDARD_OUT_HEADERS = [
     "has_annotated_stop_codon",
     "protein_seq",
 ]
+
+MUT_OUT_DICT = {
+    "TIS_coord": "TIS_coord_refmap",
+    "TIS_exon": "TIS_exon_refmap",
+    "TTS_coord": "TTS_coord_refmap",
+    "TTS_exon": "TTS_exon_refmap",
+    "LTS_coord": "LTS_coord_refmap",
+    "LTS_exon": "LTS_exon_refmap",
+}
 
 RIBO_OUT_HEADERS = [
     "correction",

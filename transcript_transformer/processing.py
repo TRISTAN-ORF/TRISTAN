@@ -18,18 +18,20 @@ from transcript_transformer import (
     RENAME_HEADERS,
     STANDARD_OUT_HEADERS,
     RIBO_OUT_HEADERS,
+    MUT_OUT_DICT,
 )
 from .util_functions import (
-    construct_prot,
-    prtime,
     apply_mutations_to_seq,
+    alter_ribo_counts,
     check_genomic_order,
+    construct_prot,
+    derive_polars_type,
     find_distant_exon_coord,
-    transcript_region_to_exons,
     get_str2str_idx_map,
+    prtime,
+    transcript_region_to_exons,
 )
 from typing import Callable
-from pdb import set_trace
 
 
 # from https://github.com/pola-rs/polars/issues/7210
@@ -44,8 +46,165 @@ def list_eval_ref(
     )
 
 
+def _exprs_for_orf_features(suffix=""):
+    seq = pl.col(f"seq{suffix}")
+    # 1. Define expressions for translation and stop codon detection.
+    orf_sequence = seq.str.slice(pl.col(f"TIS_idx{suffix}"))
+    transcript_len = seq.str.len_chars()
+    codons = orf_sequence.str.extract_all(r".{3}")
+    stop_indices_list = codons.list.eval(pl.element().is_in(STOP_CDNS).arg_true())
+    stop_codon_idx = stop_indices_list.list.first()
+    # 2. Derive the final protein sequence and related features.
+    TTS_on_transcript = stop_codon_idx.is_not_null()
+    codons_before_stop = (
+        pl.when(TTS_on_transcript)
+        .then(codons.list.slice(0, stop_codon_idx))
+        .otherwise(codons)
+    )
+    protein_seq = codons_before_stop.list.eval(
+        pl.element().replace_strict(CDN_PROT_DICT, default=pl.lit("X"))
+    ).list.join("")
+    stop_codon = codons.list.get(stop_codon_idx)
+    ORF_len = (protein_seq.str.len_chars().cast(pl.Int32)) * 3
+    TTS_idx = (
+        pl.when(TTS_on_transcript)
+        .then(pl.col(f"TIS_idx{suffix}") + ORF_len)
+        .otherwise(pl.lit(-1))
+    )
+    LTS_idx = (
+        pl.when(TTS_on_transcript)
+        .then(pl.col(f"TIS_idx{suffix}") + ORF_len - 1)
+        .otherwise(transcript_len - 1)
+    )
+    return [
+        transcript_len.alias(f"transcript_len{suffix}"),
+        TTS_on_transcript.alias(f"TTS_on_transcript{suffix}"),
+        protein_seq.alias(f"protein_seq{suffix}"),
+        stop_codon.alias(f"stop_codon{suffix}"),
+        (pl.col(f"TIS_idx{suffix}") + 1).alias(f"TIS_pos{suffix}"),
+        seq.str.slice(pl.col(f"TIS_idx{suffix}"), 3).alias(f"start_codon{suffix}"),
+        ORF_len.alias(f"ORF_len{suffix}"),
+        (
+            pl.col("transcript_id")
+            + "_"
+            + (pl.col(f"TIS_idx{suffix}") + 1).cast(pl.String)
+        ).alias(f"ORF_id{suffix}"),
+        TTS_idx.alias(f"TTS_idx{suffix}"),
+        LTS_idx.alias(f"LTS_idx{suffix}"),
+        (TTS_idx + 1).alias(f"TTS_pos{suffix}"),
+    ]
+
+
+def _get_calculate_pois_exprs(suffix=""):
+    exprs = []
+    for poi in ["TIS", "LTS", "TTS"]:
+        # In case of mutations, map idxs back to original transcript idx to calculate coords
+        # Otherwise, it's possible to create OOB errors etc.
+        ref_col = f"{poi}_idx{suffix}"
+        list_f = lambda element, ref: element <= ref
+        poi_exon_calc = list_eval_ref("exon_idxs", ref_col, list_f).list.sum() // 2 + 1
+        # If the list is empty, return None (null) to prevent out-of-bounds errors.
+        poi_exon = (
+            pl.when(pl.col("exon_idxs").list.len() > 0)
+            .then(poi_exon_calc)
+            .otherwise(pl.lit(None))
+        )
+        # Define an intermediate expression for the index relative to its exon's start.
+        exon_start_idx = (poi_exon - 1) * 2
+        poi_idx_on_exon = pl.col(ref_col) - pl.col("exon_idxs").list.get(exon_start_idx)
+        # Define an intermediate expression for the genomic coordinate.
+        poi_coord = (
+            pl.when(pl.col("strand") == "+")
+            .then(
+                pl.col("exon_coords").list.get(exon_start_idx, null_on_oob=True)
+                + poi_idx_on_exon
+            )
+            .otherwise(  # Assumes strand is "-"
+                pl.col("exon_coords").list.get(exon_start_idx + 1, null_on_oob=True)
+                - poi_idx_on_exon
+            )
+        )
+        is_inv = pl.col(ref_col) == -1
+        # --- 2. Add final, aliased expressions to the list ---
+        exprs += [
+            pl.when(is_inv)
+            .then(pl.lit(-1))
+            .otherwise(poi_exon)
+            .alias(f"{poi}_exon{suffix}"),
+            pl.when(is_inv)
+            .then(pl.lit(-1))
+            .otherwise(poi_idx_on_exon)
+            .alias(f"{poi}_idx_on_exon{suffix}"),
+            pl.when(is_inv)
+            .then(pl.lit(-1))
+            .otherwise(poi_idx_on_exon + 1)
+            .alias(f"{poi}_pos_on_exon{suffix}"),
+            pl.when(is_inv)
+            .then(pl.lit(-1))
+            .otherwise(poi_coord)
+            .alias(f"{poi}_coord{suffix}"),
+        ]
+        if poi == "TIS":
+            exprs += [
+                pl.when(pl.col("canonical_TIS_idx") != 0)
+                .then(pl.col(f"TIS_idx{suffix}") - pl.col("canonical_TIS_idx"))
+                .otherwise(pl.lit(None))
+                .cast(pl.Int32)
+                .alias(f"dist_from_canonical_TIS{suffix}"),
+            ]
+
+    return exprs
+
+
+def _calculate_orf_biotype(df_columns, suffix=""):
+    # detect ORF biotypes, evaluate whether transcript biotype is given
+    if "transcript_biotype" in df_columns:
+        biotype_expr = pl.col("transcript_biotype") == "lncRNA"
+    else:
+        biotype_expr = pl.lit(False)
+    return (
+        pl.when(pl.col("canonical_TIS_idx") != -1)
+        .then(
+            pl.when(pl.col("canonical_TIS_idx") == pl.col(f"TIS_idx{suffix}"))
+            .then(
+                pl.when(pl.col("canonical_LTS_idx") == pl.col(f"LTS_idx{suffix}"))
+                .then(pl.lit("annotated CDS"))
+                .when(pl.col("canonical_TTS_idx") < pl.col(f"TTS_idx{suffix}"))
+                .then(pl.lit("C-terminal extension"))
+                .otherwise(pl.lit("C-terminal truncation"))
+            )
+            .when(pl.col("canonical_TTS_idx") < pl.col(f"TIS_idx{suffix}"))
+            .then(pl.lit("dORF"))
+            .when(pl.col("canonical_TIS_idx") >= pl.col(f"TTS_idx{suffix}"))
+            .then(pl.lit("uORF"))
+            .when(pl.col("canonical_TIS_idx") > pl.col(f"TIS_idx{suffix}"))
+            .then(
+                pl.when(pl.col("canonical_TTS_idx") == pl.col(f"TTS_idx{suffix}"))
+                .then(pl.lit("N-terminal extension"))
+                .otherwise(pl.lit("uoORF"))
+            )
+            .when(pl.col("canonical_TTS_idx") < pl.col(f"TTS_idx{suffix}"))
+            .then(pl.lit("doORF"))
+            .otherwise(
+                pl.when(pl.col("canonical_TTS_idx") == pl.col(f"TTS_idx{suffix}"))
+                .then(pl.lit("N-terminal truncation"))
+                .otherwise(pl.lit("intORF"))
+            )
+        )
+        .otherwise(
+            pl.when(biotype_expr)
+            .then(pl.lit("lncRNA-ORF"))
+            .otherwise(pl.lit("varRNA-ORF"))
+        )
+        .alias(f"ORF_type{suffix}")
+    )
+
+
 def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
-    df_ribo = df.select("ORF_id", "h5_idx", "TIS_idx", "TTS_idx", "ORF_len")
+    sel_cols = ["ORF_id", "h5_idx", "TIS_idx", "TTS_idx", "ORF_len"]
+    if "mutations" in df.columns:
+        sel_cols += ["mutations"]
+    df_ribo = df.select(sel_cols)
     # multiple sets in case of merged data sets
     sys_path = f"{h5_path.split('.h5')[0]}_{{sample}}.h5"
     db_path = "transcript/riboseq/{sample}/5/"
@@ -102,6 +261,19 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
         )
         .alias("reads")
     )
+
+    if "mutations" in df_ribo.columns:
+        muts = pl.col("mutations").str.split(";")
+        df_ribo = df_ribo.with_columns(muts.alias("mutations_split")).with_columns(
+            pl.struct(["reads", "mutations_split"])
+            .map_elements(
+                lambda s: alter_ribo_counts(s["reads"], s["mutations_split"]),
+                return_dtype=pl.List(pl.List(pl.Int32)),
+            )
+            .list.to_struct(fields=["reads", "tmp"])
+            .struct.unnest()
+        )
+
     # get ribo properties supported by polars API
     df_ribo = df_ribo.with_columns(
         reads_in_ORF=(pl.col("reads").list.slice(pl.col("TIS_idx"), pl.col("ORF_len"))),
@@ -162,15 +334,16 @@ def construct_output_table(
     return_ORF_coords=False,
     max_preds=100000,
 ):
+    """
+    Constructs the output table using Polars LazyFrames for optimized performance.
+    """
     tool_scores = []
     f = h5py.File(h5_path, "r")
     f_tr_ids = np.array(f["transcript/transcript_id"])
     f_headers = pl.Series(f["transcript"].keys())
     f_headers = f_headers.filter(~f_headers.is_in(["riboseq", "tis"]))
-    if "tis_transformer_score" in f_headers:
-        has_stored_tt_output = True
-    else:
-        has_stored_tt_output = False
+
+    has_stored_tt_output = "tis_transformer_score" in f_headers
     f_headers = f_headers.filter(f_headers != "tis_transformer_score")
 
     if (output is not None) and is_rt_output:
@@ -183,13 +356,14 @@ def construct_output_table(
             assert has_stored_tt_output, "No model predictions found"
 
     xtr_heads = [h for h in f_headers if h not in STANDARD_HEADERS]
+
     if output is not None:
         tr_ids = np.array([o[0].split(b"|")[1] for o in output])
         preds = [o[1] for o in output]
         group = output[0][0].split(b"|")[0].decode()
-        # Map transcript IDs to h5 indices
         pred_to_h5_args = get_str2str_idx_map(tr_ids, f_tr_ids)
-        df_initial = pl.DataFrame(
+
+        lf_initial = pl.LazyFrame(
             {
                 "transcript_id": tr_ids,
                 f"{prefix}score": preds,
@@ -197,46 +371,50 @@ def construct_output_table(
             }
         ).with_columns(
             pl.col("transcript_id").cast(pl.String),
-            pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float32)),
+            pl.col(f"{prefix}score").map_elements(
+                list, return_dtype=pl.List(pl.Float32)
+            ),
         )
 
-        df_initial = df_initial.with_columns(h5_idx=pl.lit(pred_to_h5_args))
-
-        if (is_rt_output) and has_stored_tt_output and (not mut_dict):
+        if is_rt_output and has_stored_tt_output and not mut_dict:
             tool_scores.append("tis_transformer_score")
             tt_scores = f["transcript/tis_transformer_score"][:][pred_to_h5_args]
-            df_initial = df_initial.with_columns(
+            lf_initial = lf_initial.with_columns(
                 tis_transformer_score=pl.lit(tt_scores).map_elements(
-                    list, pl.List(pl.Float32)
+                    list, return_dtype=pl.List(pl.Float32)
                 )
             )
-
         tool_headers = tool_scores + [f"{prefix}rank"]
         ribo_out_headers = [] if not is_rt_output else RIBO_OUT_HEADERS
         out_headers = tool_headers + STANDARD_OUT_HEADERS + ribo_out_headers + xtr_heads
-
     else:
         tool_headers = ["tis_transformer_score", "tis_transformer_rank"]
-        df_initial = pl.DataFrame(
+        lf_initial = pl.LazyFrame(
             {
                 "transcript_id": f["transcript/transcript_id"][:],
                 "h5_idx": np.arange(len(f_tr_ids)),
                 f"{prefix}score": f["transcript/tis_transformer_score"][:],
             }
-        ).with_columns(pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float32)))
-
+        ).with_columns(
+            pl.col(f"{prefix}score").map_elements(
+                list, return_dtype=pl.List(pl.Float32)
+            )
+        )
         out_headers = tool_headers + STANDARD_OUT_HEADERS + xtr_heads
 
     if return_ORF_coords:
         out_headers += ["ORF_coords"]
     if mut_dict:
-        out_headers += ["mutations", "ref_TIS_pos", "ref_TTS_pos"]
+        out_headers += ["mutations", "TIS_pos_refmap", "TTS_pos_refmap"]
+        # change existing header names in output
+        out_headers = [MUT_OUT_DICT.get(h, h) for h in out_headers]
 
     el_gt_th = pl.element() > prob_cutoff
     el_not_nan = pl.element().is_not_nan()
     pos_args = pl.col(f"{prefix}score").list.eval((el_gt_th & el_not_nan).arg_true())
-    df_filtered = (
-        df_initial.sort("h5_idx")
+
+    lf_filtered = (
+        lf_initial.sort("h5_idx")
         .with_columns(TIS_idx=pos_args.cast(pl.List(pl.Int64)))
         .filter(pl.col("TIS_idx").list.len() > 0)
         .with_columns(
@@ -247,300 +425,202 @@ def construct_output_table(
         )
     )
     # Top K prediction filtering (when necessary)
-    if df_filtered.select(pl.col("TIS_idx").list.len().sum()).item() > max_preds:
+    # NOTE: This part requires a collection to determine the total number of predictions.
+    total_preds = (
+        lf_filtered.select(pl.col("TIS_idx").list.len().sum()).collect().item()
+    )
+    if total_preds > max_preds:
         prtime(f"Too many predictions, filtering to top {max_preds}...", "\t")
         # Efficiently find the score of the Nth-best prediction.
         score_th = (
-            df_filtered.select(pl.col(f"{prefix}score").explode())
+            lf_filtered.select(pl.col(f"{prefix}score").explode())
             .sort(f"{prefix}score", descending=True)
-            .item(max_preds - 1, 0)
-        )  # Get item from row `max_preds-1`, column 0
-        mask = pl.col("TIS_idx")
-        pos_idxs = pl.col(f"{prefix}score").list.eval(
-            (pl.element() > score_th).arg_true()
+            .limit(max_preds)
+            .select(pl.all().last())  # Get the Nth value
+            .collect()
+            .item()
         )
-        df_filtered = df_filtered.with_columns(
+        pos_idxs = pl.col(f"{prefix}score").list.eval(
+            (pl.element() >= score_th).arg_true()
+        )
+        lf_filtered = lf_filtered.with_columns(
             TIS_idx=pl.col("TIS_idx").list.gather(pos_idxs),
             **{score: pl.col(score).list.gather(pos_idxs) for score in tool_scores},
         )
 
-    # Metadata Join
-    df_metadata = pl.DataFrame(
-        {h: f[f"transcript/{h}"][()] for h in f_headers}
-    ).with_row_index("h5_idx")
-    df = df_filtered.join(df_metadata, on="h5_idx")
+    # # Metadata Join
+    meta_exprs = []
+    for h in f_headers:
+        # Keep the array in memory for the lazy execution later
+        v = np.array(f[f"transcript/{h}"][()])
+        meta_exprs.append(
+            pl.col("h5_idx")
+            # The map_elements function is correct, it just needs to be executed lazily.
+            .map_elements(
+                lambda x, arr=v: arr[x], return_dtype=derive_polars_type(v)
+            ).alias(h)
+        )
+    lf_filtered = lf_filtered.with_columns(meta_exprs).with_columns(
+        pl.col(pl.Binary).cast(pl.String),
+    )
 
-    # devectorize and Listify numpy arrays
-    df = df.with_columns(
+    # Devectorize and process sequences
+    lf = lf_filtered.with_columns(
         (
             pl.col("canonical_protein_seq")
-            .map_elements(list, pl.List(pl.Int8))
+            .map_elements(list, return_dtype=pl.List(pl.Int8))
             .list.eval(pl.element().replace_strict(IDX_PROT_DICT))
             .list.join("")
         ),
-        pl.col("seq").map_elements(list, pl.List(pl.Int8)),
-        pl.col("exon_idxs").map_elements(list, pl.List(pl.Int64)),
-        pl.col("exon_coords").map_elements(list, pl.List(pl.Int64)),
-        pl.col("CDS_coords").map_elements(list, pl.List(pl.Int64)),
-        pl.col("CDS_idxs").map_elements(list, pl.List(pl.Int64)),
-        pl.col(pl.Binary).cast(pl.String),
     )
-    # apply mutations to sequence if provided, store mut_seq_map to keep track of how
-    # mutations map back to original sequence in order to derive genomic coordinates
     if mut_dict:
-        df = df.with_columns(
-            mutations=pl.col("transcript_id").replace_strict(mut_dict, default=[])
-        )
-        df = df.with_columns(
-            pl.struct(["seq", "mutations"])
-            .map_elements(
-                lambda s: apply_mutations_to_seq(s["seq"], s["mutations"]),
-                return_dtype=pl.List(pl.List(pl.Int64)),
+        lf = (
+            lf.with_columns(
+                mutations=pl.col("transcript_id").replace_strict(mut_dict, default=[])
             )
-            .list.to_struct(fields=["seq", "mut_seq_map", "mutations_mask"])
-            .struct.unnest()
-        )
-        df = df.with_columns(
-            mutations=pl.col("mutations")
-            .list.gather(
-                pl.col("mutations_mask")
-                .cast(pl.List(pl.Boolean))
-                .list.eval(pl.element().arg_true())
+            .with_columns(
+                pl.struct(["seq", "mutations"])
+                .map_elements(
+                    lambda s: apply_mutations_to_seq(s["seq"], s["mutations"]),
+                    return_dtype=pl.List(pl.List(pl.Int64)),
+                )
+                .list.to_struct(fields=["seq", "mut_seq_map", "mutations_mask"])
+                .struct.unnest()
             )
-            .list.join(";"),
+            .with_columns(
+                mutations=pl.col("mutations")
+                .list.gather(
+                    pl.col("mutations_mask")
+                    .cast(pl.List(pl.Boolean))
+                    .list.eval(pl.element().arg_true())
+                )
+                .list.join(";"),
+            )
         )
-    df = df.with_columns(
-        pl.col("seq").list.eval(pl.element().replace_strict(IDX_DNA_DICT)).list.join("")
+    lf = lf.with_columns(
+        seq=pl.col("seq")
+        .list.eval(pl.element().replace_strict(IDX_DNA_DICT))
+        .list.join("")
     )
-
-    # Explode df to get ORF predictions per row
-    df = df.explode(tool_scores + ["TIS_idx"]).sort("h5_idx")
-
-    # if non-canonical ATG, find in-frame ATGs in-case of near-miss predictions
+    # Explode lf to get ORF predictions per row
+    lf = lf.explode(tool_scores + ["TIS_idx"]).sort("h5_idx")
     if correction:
         prtime("Correcting near-miss TIS predictions...", "\t")
-        # 1. Define the search window boundaries.
-        corr_dist = pl.lit(pl.Series([dist * 3] * len(df))).cast(pl.Int64)
-        # Calc upstream cut as multiple of 3 and not lower than 0
-        upstr_corr = corr_dist.clip(0, pl.col("TIS_idx") - pl.col("TIS_idx").mod(3))
+        # max distance of correction
+        corr_dist = pl.lit(dist * 3, dtype=pl.Int64)
+        # clip upstream correction between 0 and pos of TIS prediction
+        upstr_corr = pl.min_horizontal(
+            pl.col("TIS_idx") - pl.col("TIS_idx").mod(3), corr_dist
+        )
 
-        # 2. Extract the sequence window and find all in-frame "ATG"s.
         search_window = pl.col("seq").str.slice(
             pl.col("TIS_idx") - upstr_corr,
             upstr_corr + 3 + corr_dist,
         )
         codons = search_window.str.extract_all(r".{3}")
-        # Find ATG in extracted list, indices start at 0
         atg_codon_indices = codons.list.eval(
             pl.element().str.contains("ATG").arg_true()
         )
-        # atg_codon_indices start at 0, upstr_corr modifies the indicies to be relative
         corr_distances = (atg_codon_indices * 3) - upstr_corr
-        # Fill empty lists with 0 values
         corr_distances_filled = (
-            pl.when(corr_distances.list.len() == 0).then([0]).otherwise(corr_distances)
+            pl.when(corr_distances.list.len() == 0)
+            .then(pl.lit([0], dtype=pl.List(pl.Int64)))
+            .otherwise(corr_distances)
         )
-
         closest_distance_idx = corr_distances_filled.list.eval(
             pl.element().abs()
-        ).list.arg_min()  # This arg_min is fine
+        ).list.arg_min()
         best_correction = corr_distances_filled.list.get(closest_distance_idx)
-        df = df.with_columns(
+        lf = lf.with_columns(
             TIS_idx=pl.col("TIS_idx") + best_correction,
             correction=corr_distances_filled.list.get(closest_distance_idx),
         )
-
         if remove_duplicates:
-            df = df.sort("ribotie_score", descending=True).unique(
+            lf = lf.sort("ribotie_score", descending=True).unique(
                 ["transcript_id", "TIS_idx"], keep="first"
             )
-    # 1. Define expressions for translation and stop codon detection.
-    orf_sequence = pl.col("seq").str.slice(pl.col("TIS_idx"))
-    codons = orf_sequence.str.extract_all(r".{3}")
-    stop_indices_list = codons.list.eval(pl.element().is_in(STOP_CDNS).arg_true())
-    stop_codon_idx = stop_indices_list.list.first()
 
-    # 2. Derive the final protein sequence and related features.
-    TTS_on_transcript = stop_codon_idx.is_not_null()
-    codons_before_stop = codons.list.slice(0, stop_codon_idx)
+    # --- Feature calculation using helper functions ---
+    lf = lf.collect().lazy()  # fixes schema confusion for 'seq'
+    lf = lf.with_columns(_exprs_for_orf_features()).filter(pl.col("ORF_len") > 0)
 
-    protein_seq = codons_before_stop.list.eval(
-        pl.element().replace_strict(CDN_PROT_DICT, default=pl.lit("X"))
-    ).list.join("")
-
-    stop_codon = codons.list.get(stop_codon_idx)
-    ORF_len = protein_seq.str.len_chars() * 3
+    # Add distance from canonical TIS
     dist_from_canonical_TIS = (
         pl.when(pl.col("canonical_TIS_idx") != 0)
         .then(pl.col("TIS_idx") - pl.col("canonical_TIS_idx"))
         .otherwise(pl.lit(None))
         .cast(pl.Int32)
     )
-    TTS_idx = (
-        pl.when(TTS_on_transcript)
-        .then(pl.col("TIS_idx") + ORF_len)
-        .otherwise(pl.lit(-1))
-    )
-    LTS_idx = (
-        pl.when(TTS_on_transcript)
-        .then(pl.col("TIS_idx") + ORF_len - 1)
-        .otherwise(pl.col("transcript_len") - 1)
-    )
-    df = df.with_columns(
-        TTS_on_transcript=TTS_on_transcript,
-        protein_seq=protein_seq,
-        stop_codon=stop_codon,
-        TIS_pos=pl.col("TIS_idx") + 1,
-        start_codon=pl.col("seq").str.slice(pl.col("TIS_idx"), 3),
+    lf = lf.with_columns(
         dist_from_canonical_TIS=dist_from_canonical_TIS,
         frame_wrt_canonical_TIS=dist_from_canonical_TIS % 3,
-        ORF_len=ORF_len,
-        ORF_id=pl.col("transcript_id") + "_" + (pl.col("TIS_idx") + 1).cast(pl.String),
-        TTS_idx=TTS_idx,
-        LTS_idx=LTS_idx,
-        TTS_pos=TTS_idx + 1,
         canonical_TIS_pos=pl.col("canonical_TIS_idx") + 1,
         canonical_TTS_pos=pl.col("canonical_TTS_idx") + 1,
         canonical_LTS_pos=pl.col("canonical_LTS_idx") + 1,
-    ).filter(pl.col("ORF_len") > 0)
+    )
+
     if mut_dict:
-        ref_TIS_pos = pl.col("mut_seq_map").list.get(pl.col("TIS_idx")).add(1)
-        ref_TTS_pos = pl.col("mut_seq_map").list.get(pl.col("TTS_idx")).add(1)
-        df = df.with_columns(
-            ref_TIS_pos.alias("ref_TIS_pos"),
-            ref_TTS_pos.alias("ref_TTS_pos"),
+        lf = lf.with_columns(
+            TIS_idx_refmap=pl.col("mut_seq_map").list.get(pl.col("TIS_idx")),
+            LTS_idx_refmap=pl.col("mut_seq_map").list.get(pl.col("LTS_idx")),
+            TTS_idx_refmap=pl.col("mut_seq_map").list.get(pl.col("TTS_idx")),
+            TIS_pos_refmap=pl.col("mut_seq_map").list.get(pl.col("TIS_idx")) + 1,
+            TTS_pos_refmap=pl.col("mut_seq_map").list.get(pl.col("TTS_idx")) + 1,
         )
-    # Find exon id's and coordinates for start and stop sites
-    sel_cols = [
-        "ORF_id",
-        "strand",
-        "TTS_on_transcript",
-        "TIS_idx",
-        "LTS_idx",
-        "TTS_idx",
-        "exon_idxs",
-        "exon_coords",
-    ]
-    exprs = []
-    for poi in ["TIS", "LTS", "TTS"]:
-        # In case of mutations, map idxs back to original transcript idx to calculate coords
-        # Otherwise, it's possible to create OOB errors etc.
-        if mut_dict:
-            ref_col = f"ref_{poi}_idx"
-            df = df.with_columns(
-                pl.col("mut_seq_map").list.get(pl.col(f"{poi}_idx")).alias(ref_col)
-            )
-        else:
-            ref_col = f"{poi}_idx"
+        # Calculate coordinates for TIS, LTS, TTS
+        lf = lf.with_columns(_get_calculate_pois_exprs("_refmap"))
+    else:
+        lf = lf.with_columns(_get_calculate_pois_exprs())
 
-        list_f = lambda element, ref: element <= ref
-        poi_exon_calc = list_eval_ref("exon_idxs", ref_col, list_f).list.sum() // 2 + 1
-
-        # If the list is empty, return None (null) to prevent out-of-bounds errors.
-        poi_exon = (
-            pl.when(pl.col("exon_idxs").list.len() > 0)
-            .then(poi_exon_calc)
-            .otherwise(pl.lit(None))
-        )
-
-        # Define an intermediate expression for the index relative to its exon's start.
-        exon_start_idx = (poi_exon - 1) * 2
-        poi_idx_on_exon = pl.col(ref_col) - pl.col("exon_idxs").list.get(exon_start_idx)
-
-        # Define an intermediate expression for the genomic coordinate.
-        poi_coord = (
-            pl.when(pl.col("strand") == "+")
-            .then(
-                pl.col("exon_coords").list.get(exon_start_idx, null_on_oob=True)
-                + poi_idx_on_exon
-            )
-            .otherwise(  # Assumes strand is "-"
-                pl.col("exon_coords").list.get(exon_start_idx + 1, null_on_oob=True)
-                - poi_idx_on_exon
-            )
-        )
-        is_inv = pl.col(ref_col) == -1
-        # --- 2. Add final, aliased expressions to the list ---
-        exprs += [
-            pl.when(is_inv).then(pl.lit(-1)).otherwise(poi_exon).alias(f"{poi}_exon"),
-            pl.when(is_inv)
-            .then(pl.lit(-1))
-            .otherwise(poi_idx_on_exon)
-            .alias(f"{poi}_idx_on_exon"),
-            pl.when(is_inv)
-            .then(pl.lit(-1))
-            .otherwise(poi_idx_on_exon + 1)
-            .alias(f"{poi}_pos_on_exon"),
-            pl.when(is_inv).then(pl.lit(-1)).otherwise(poi_coord).alias(f"{poi}_coord"),
-        ]
-    df = df.with_columns(exprs)
+    # --- Ribo-seq Join ---
+    df_collected = lf.collect()
 
     if is_rt_output:
         prtime("Parsing ribo-seq information...", "\t")
-        df_ribo = parse_ribo_data(df, f, h5_path, grouped_ribo_ids[group], parallel)
-        if len(df_ribo) > 0:
-            df = df.join(df_ribo[:, [0, *range(10, 18)]], on="ORF_id", how="inner")
+        df_ribo = parse_ribo_data(
+            df_collected, f, h5_path, grouped_ribo_ids.get(group), parallel
+        )
+        if len(df_ribo) > 0 and df_ribo.shape[1] > 10:
+            df_collected = df_collected.join(
+                df_ribo.select(["ORF_id", *RIBO_OUT_HEADERS[1:]]),
+                on="ORF_id",
+                how="inner",
+            )
         else:
-            if len(df) > 0:
-                print(f"!-> No ribosome reads present amongst input samples.")
-            df = df.join(df_ribo[:, [0]], on="ORF_id", how="inner")
-    # stop early if df is empty after Ribo-seq join
-    if len(df) == 0:
-        out_dicts = {n: pl.Series(n, []) for n in out_headers}
+            if len(df_collected) > 0:
+                print("!-> No ribosome reads present amongst input samples.")
+            df_collected = df_collected.join(
+                df_ribo.select("ORF_id"), on="ORF_id", how="inner"
+            )
+
+    # Stop early if df is empty
+    if len(df_collected) == 0:
+        # Handle empty case as before
+        out_dicts = {n: pl.Series(n, [], dtype=pl.Utf8) for n in out_headers}
         df_out = pl.DataFrame(out_dicts).rename(RENAME_HEADERS)
-        df_out.write_csv(f"{out_prefix}.redundant.csv")
-        df_out.write_csv(f"{out_prefix}.csv")
-        df_out.write_csv(f"{out_prefix}.novel.csv")
-        print(f"\t !-> The positive set is empty!")
+        for label in [".redundant", "", ".novel"]:
+            df_out.write_csv(f"{out_prefix}{label}.csv")
+        print("\t !-> The positive set is empty!")
+        f.close()
         return df_out, df_out, df_out
 
-    # detect ORF biotypes, evaluate whether transcript biotype is given
+    lf = df_collected.lazy()  # Convert back to LazyFrame
+
+    # --- ORF Biotype and CDS Variant Detection ---
     prtime("Parsing ORF type information...", "\t")
-    if "transcript_biotype" in df.columns:
-        biotype_expr = pl.col("transcript_biotype") == "lncRNA"
-    else:
-        biotype_expr = pl.lit(False)
-    df = df.with_columns(
-        ORF_type=pl.when(pl.col("canonical_TIS_idx") != -1)
-        .then(
-            pl.when(pl.col("canonical_TIS_idx") == pl.col("TIS_idx"))
-            .then(
-                pl.when(pl.col("canonical_LTS_idx") == pl.col("LTS_idx"))
-                .then(pl.lit("annotated CDS"))
-                .when(pl.col("canonical_TTS_idx") < pl.col("TTS_idx"))
-                .then(pl.lit("C-terminal extension"))
-                .otherwise(pl.lit("C-terminal truncation"))
-            )
-            .when(pl.col("canonical_TTS_idx") < pl.col("TIS_idx"))
-            .then(pl.lit("dORF"))
-            .when(pl.col("canonical_TIS_idx") >= pl.col("TTS_idx"))
-            .then(pl.lit("uORF"))
-            .when(pl.col("canonical_TIS_idx") > pl.col("TIS_idx"))
-            .then(
-                pl.when(pl.col("canonical_TTS_idx") == pl.col("TTS_idx"))
-                .then(pl.lit("N-terminal extension"))
-                .otherwise(pl.lit("uoORF"))
-            )
-            .when(pl.col("canonical_TTS_idx") < pl.col("TTS_idx"))
-            .then(pl.lit("doORF"))
-            .otherwise(
-                pl.when(pl.col("canonical_TTS_idx") == pl.col("TTS_idx"))
-                .then(pl.lit("N-terminal truncation"))
-                .otherwise(pl.lit("intORF"))
-            )
-        )
-        .otherwise(
-            pl.when(biotype_expr)
-            .then(pl.lit("lncRNA-ORF"))
-            .otherwise(pl.lit("varRNA-ORF"))
-        )
-    )
+    lf = lf.with_columns(_calculate_orf_biotype(lf.collect_schema().names()))
+
     prtime("Detecting CDS variants...", "\t")
-    out_cols = ["ORF_coords", "ORF_exons"]
+    if mut_dict:
+        suffix = "_refmap"
+    else:
+        suffix = ""
+    out_cols = [f"ORF_coords{suffix}", f"ORF_exons{suffix}"]
     out_types = [pl.List(pl.Int64), pl.List(pl.Int64)]
-    attrs = ["TIS_coord", "LTS_coord", "strand", "exon_coords"]
-    df = (
-        df.with_columns(
+    attrs = [f"TIS_coord{suffix}", f"LTS_coord{suffix}", "strand", "exon_coords"]
+
+    lf = (
+        lf.with_columns(
             pl.struct(set(attrs))
             .map_elements(
                 lambda x: dict(
@@ -551,18 +631,19 @@ def construct_output_table(
             .struct.unnest()
         )
         .with_columns(
-            ORF_exon_start=pl.col("ORF_coords").list.gather_every(2, 0),
-            ORF_exon_end=pl.col("ORF_coords").list.gather_every(2, 1),
+            pl.col(f"ORF_coords{suffix}")
+            .list.gather_every(2, 0)
+            .alias(f"ORF_exon_start{suffix}"),
+            pl.col(f"ORF_coords{suffix}")
+            .list.gather_every(2, 1)
+            .alias(f"ORF_exon_end{suffix}"),
         )
         .with_columns(
-            ORF_exon_len=(
-                (pl.col("ORF_exon_start") - pl.col("ORF_exon_end")).list.eval(
-                    pl.element().abs() + 1
-                )
-            )
+            (pl.col(f"ORF_exon_start{suffix}") - pl.col(f"ORF_exon_end{suffix}"))
+            .list.eval(pl.element().abs() + 1)
+            .alias(f"ORF_exon_len{suffix}")
         )
     )
-    # load in all CDS properties in h5 db
     h5_cols = [
         "transcript_id",
         "seqname",
@@ -571,69 +652,69 @@ def construct_output_table(
         "canonical_TIS_coord",
         "canonical_LTS_coord",
     ]
-    # Get transcripts with TIS
     mask = pl.Series(list(f[f"transcript/canonical_TIS_idx"])) != -1
     df_CDS = (
         pl.DataFrame(
-            {f"{h}": np.array(f[f"transcript/{h}"])[mask.arg_true()] for h in h5_cols}
+            {h: np.array(f[f"transcript/{h}"])[mask.arg_true()] for h in h5_cols}
         )
         .with_columns(
-            pl.col("CDS_coords").map_elements(list, pl.List(pl.Int64)),
+            pl.col("CDS_coords").map_elements(list, return_dtype=pl.List(pl.Int64)),
             pl.col(pl.Binary).cast(pl.String),
         )
         .with_columns(
             CDS_exon_start=pl.col("CDS_coords").list.gather_every(2, 0),
             CDS_exon_end=pl.col("CDS_coords").list.gather_every(2, 1),
-            # get 5' genomic coordinate
-            CDS_start_range=(
-                pl.when(pl.col("strand") == "+")
-                .then(pl.col("CDS_coords").list.get(0))
-                .otherwise(pl.col("CDS_coords").list.get(-2))
-            ),
-            # get 3' genomic coordinate
-            CDS_end_range=(
-                pl.when(pl.col("strand") == "+")
-                .then(pl.col("CDS_coords").list.get(-1))
-                .otherwise(pl.col("CDS_coords").list.get(1))
-            ),
+            CDS_start_range=pl.when(pl.col("strand") == "+")
+            .then(pl.col("CDS_coords").list.get(0))
+            .otherwise(pl.col("CDS_coords").list.get(-2)),
+            CDS_end_range=pl.when(pl.col("strand") == "+")
+            .then(pl.col("CDS_coords").list.get(-1))
+            .otherwise(pl.col("CDS_coords").list.get(1)),
         )
         .drop("CDS_coords")
     )
-    # close h5 db handle
-    f.file.close()
-    # To evaluate CDS variants, group df and df_CDS by seqname (to prevent OOM)
+    f.close()
+
+    # NOTE: Group-by operation is collected to process chromosome by chromosome, avoiding OOM issues.
+    df = lf.collect()
     df_grps = []
-    total = df["seqname"].unique().len()
+    total = df["seqname"].n_unique()
     for seqname, df_grp in tqdm(df.group_by("seqname"), total=total, desc="seqname"):
         df_CDS_grp = df_CDS.filter(pl.col("seqname") == seqname[0])
-        df_grp = parse_CDS_overlap(df_grp, df_CDS_grp)
+        df_grp = parse_CDS_overlap(df_grp, df_CDS_grp, suffix=suffix)
         df_grps.append(df_grp)
-    df = pl.concat(df_grps)
 
-    # Change ORF_coord delimiter to ";"
+    if not df_grps:
+        df = df.clear(0)  # Create empty dataframe with same schema
+    else:
+        df = pl.concat(df_grps)
+
     if return_ORF_coords:
         df = df.with_columns(
-            ORF_coords=pl.col("ORF_coords").cast(pl.List(pl.String)).list.join(";")
+            ORF_coords=pl.col(f"ORF_coords{suffix}")
+            .cast(pl.List(pl.String))
+            .list.join(";")
         )
 
-    # --- Filter CDS variants and custom filters ---
-    # Custom filters
+    # --- Final Filtering and Saving ---
     conds_xtr = [
         pl.col("TTS_on_transcript") if exclude_invalid_TTS else pl.lit(True),
         pl.col("start_codon").str.contains(start_codons),
         pl.col("ORF_len") >= min_ORF_len,
     ]
-    c_xtr = pl.lit(True).and_(*conds_xtr)
-    df = df.filter(c_xtr)
-    # CDS variant filtering
+    
+    # All results get manual filter steps
+    df = df.filter(pl.lit(True).and_(*conds_xtr))
+
     if len(df) > 0:
-        df_filt = filter_CDS_variants(df)
+        df_filt = filter_CDS_variants(df, suffix=suffix)
     else:
         df_filt = df
-    df_novel = df_filt.filter(pl.col("ORF_type") != "annotated CDS")
 
-    # --- Save to csv ---
-    for df_, label in zip([df, df_filt, df_novel], [f".redundant", f"", f".novel"]):
+    df_novel = df_filt.filter(pl.col("ORF_type") != "annotated CDS")
+    # Save outputs
+    for df_, label in zip([df, df_filt, df_novel], [".redundant", "", ".novel"]):
+        # The final DataFrames are collected implicitly by being eager at this point
         save_output_table(df_, out_prefix, label, prefix, out_headers)
 
     return df, df_filt, df_novel
@@ -653,54 +734,63 @@ def save_output_table(df, out_prefix, label, prefix, out_headers):
     df.write_csv(f"{out_prefix}{label}.csv", float_precision=4)
 
 
-import polars as pl
-
-
-def parse_CDS_overlap(df: pl.DataFrame, df_CDS: pl.DataFrame) -> pl.DataFrame:
+def parse_CDS_overlap(
+    df: pl.DataFrame, df_CDS: pl.DataFrame, suffix: str = ""
+) -> pl.DataFrame:
     """
     Identifies and annotates ORFs that overlap with known CDS regions using a
     fully native, memory-efficient, and logically correct lazy Polars pipeline.
     """
+    TIS_coord = pl.col(f"TIS_coord{suffix}")
+    LTS_coord = pl.col(f"LTS_coord{suffix}")
+    ORF_exon_end = pl.col(f"ORF_exon_end{suffix}")
+    ORF_exon_start = pl.col(f"ORF_exon_start{suffix}")
+
     # This initial step is already vectorized and efficient.
     df = df.with_columns(
-        has_CDS_TIS=(pl.col("TIS_coord").is_in(df_CDS["canonical_TIS_coord"])),
-        has_CDS_TTS=(pl.col("LTS_coord").is_in(df_CDS["canonical_LTS_coord"])),
+        has_CDS_TIS=(TIS_coord.is_in(df_CDS["canonical_TIS_coord"])),
+        has_CDS_TTS=(LTS_coord.is_in(df_CDS["canonical_LTS_coord"])),
     )
 
     # --- Step 1: Find All Overlapping ORF-CDS Pairs Lazily ---
     overlap_filter = (
         pl.when(pl.col("strand") == "+")
         .then(
-            (pl.col("CDS_start_range") < pl.col("ORF_exon_end").list.last())
-            & (pl.col("CDS_end_range") > pl.col("ORF_exon_start").list.first())
+            (pl.col("CDS_start_range") < ORF_exon_end.list.last())
+            & (pl.col("CDS_end_range") > ORF_exon_start.list.first())
         )
         .otherwise(
-            (pl.col("CDS_start_range") < pl.col("ORF_exon_end").list.first())
-            & (pl.col("CDS_end_range") > pl.col("ORF_exon_start").list.last())
+            (pl.col("CDS_start_range") < ORF_exon_end.list.first())
+            & (pl.col("CDS_end_range") > ORF_exon_start.list.last())
         )
     )
 
-    # THE FIX for frac: Add ORF_len to the initial selection to use for normalization later.
     lf_joined = (
         df.lazy()
-        .select("ORF_id", "strand", "ORF_exon_start", "ORF_exon_end", "ORF_len")
+        .select(
+            "ORF_id",
+            "strand",
+            f"ORF_exon_start{suffix}",
+            f"ORF_exon_end{suffix}",
+            "ORF_len",
+        )
         .join(df_CDS.lazy(), how="cross")
         .filter(overlap_filter)
     )
 
     # --- Step 2: Calculate Features for Each Overlapping Exon ---
     lf_with_clone_info = lf_joined.with_columns(
-        is_clone=(pl.col("ORF_exon_start") == pl.col("CDS_exon_start"))
-        & (pl.col("ORF_exon_end") == pl.col("CDS_exon_end"))
+        is_clone=(ORF_exon_start == pl.col("CDS_exon_start"))
+        & (ORF_exon_end == pl.col("CDS_exon_end"))
     )
     lf_exons = lf_with_clone_info.explode(["CDS_exon_start", "CDS_exon_end"]).explode(
-        ["ORF_exon_start", "ORF_exon_end"]
+        [f"ORF_exon_start{suffix}", f"ORF_exon_end{suffix}"]
     )
 
     # --- Step 3: Natively Calculate Overlap (from your `eval_overlap` function) ---
     overlap_expr = (
-        pl.min_horizontal(["ORF_exon_end", "CDS_exon_end"])
-        - pl.max_horizontal(["ORF_exon_start", "CDS_exon_start"])
+        pl.min_horizontal([f"ORF_exon_end{suffix}", "CDS_exon_end"])
+        - pl.max_horizontal([f"ORF_exon_start{suffix}", "CDS_exon_start"])
         + 1
     ).clip(lower_bound=0)
     lf_overlap_calc = lf_exons.with_columns(overlap=overlap_expr)
@@ -709,19 +799,19 @@ def parse_CDS_overlap(df: pl.DataFrame, df_CDS: pl.DataFrame) -> pl.DataFrame:
     # to correctly select the best overlap for each ORF exon without dropping groups.
     lf_best_overlap = (
         lf_overlap_calc.sort(["overlap", "is_clone"], descending=True)
-        .group_by("ORF_id", "ORF_exon_start", "ORF_exon_end")
+        .group_by("ORF_id", f"ORF_exon_start{suffix}", f"ORF_exon_end{suffix}")
         .first()
     )
 
     # --- Step 4: Calculate Non-Overlapping Coordinates ---
     cond_in_frame = (
         pl.when(pl.col("strand") == "+")
-        .then((pl.col("ORF_exon_start") - pl.col("CDS_exon_start")) % 3 == 0)
-        .otherwise((pl.col("ORF_exon_end") - pl.col("CDS_exon_end")) % 3 == 0)
+        .then((ORF_exon_start - pl.col("CDS_exon_start")) % 3 == 0)
+        .otherwise((ORF_exon_end - pl.col("CDS_exon_end")) % 3 == 0)
     )
     lf_no_cds_coords = lf_best_overlap.with_columns(
         is_shared_and_in_frame=cond_in_frame,
-        ORF_exon_len=(pl.col("ORF_exon_end") - pl.col("ORF_exon_start")).abs() + 1,
+        ORF_exon_len=(ORF_exon_end - ORF_exon_start).abs() + 1,
     ).with_columns(
         ORF_coords_no_CDS=pl.when(
             (pl.col("overlap") > 0) & (pl.col("overlap") < pl.col("ORF_exon_len"))
@@ -729,12 +819,12 @@ def parse_CDS_overlap(df: pl.DataFrame, df_CDS: pl.DataFrame) -> pl.DataFrame:
         .then(
             pl.concat_list(
                 [
-                    pl.when(pl.col("ORF_exon_start") < pl.col("CDS_exon_start"))
-                    .then(pl.col("ORF_exon_start"))
+                    pl.when(ORF_exon_start < pl.col("CDS_exon_start"))
+                    .then(ORF_exon_start)
                     .otherwise(pl.col("CDS_exon_end")),
-                    pl.when(pl.col("ORF_exon_start") < pl.col("CDS_exon_start"))
+                    pl.when(ORF_exon_start < pl.col("CDS_exon_start"))
                     .then(pl.col("CDS_exon_start"))
-                    .otherwise(pl.col("ORF_exon_end")),
+                    .otherwise(ORF_exon_end),
                 ]
             )
         )
@@ -766,15 +856,21 @@ def parse_CDS_overlap(df: pl.DataFrame, df_CDS: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
-def filter_CDS_variants(df):
-    conds_cds_var = [
-        pl.col("has_CDS_clones") == False,
-        pl.col("shared_in_frame_CDS_frac") < 1,
-    ]
-    c_clone = pl.col("has_CDS_clones") == False
-    c_cds_var = pl.lit(True).and_(*conds_cds_var)
-    c_1 = pl.col("ORF_type") == "annotated CDS"
-    c_2 = pl.col("ORF_type").is_in(
+def filter_CDS_variants(df, suffix: str = ""):
+    """
+    Lazily filters for the most relevant CDS variant for each unique TIS coordinate
+    using window functions instead of an eager group-by iteration.
+
+    Args:
+        df (pl.LazyFrame): The input LazyFrame of ORF predictions.
+
+    Returns:
+        pl.LazyFrame: A new LazyFrame with the filtered results.
+    """
+    TIS_coord = f"TIS_coord{suffix}"
+    # Define the filtering conditions for clarity
+    c_is_annotated_cds = pl.col("ORF_type") == "annotated CDS"
+    c_is_trunc_or_ext = pl.col("ORF_type").is_in(
         [
             "N-terminal truncation",
             "N-terminal extension",
@@ -782,33 +878,44 @@ def filter_CDS_variants(df):
             "C-terminal extension",
         ]
     )
-    c_3 = pl.col("ORF_type").is_in(
+    c_is_other_orf = pl.col("ORF_type").is_in(
         ["uORF", "uoORF", "dORF", "doORF", "intORF", "lncRNA-ORF"]
     )
+    c_is_not_clone = pl.col("has_CDS_clones") == False
+    c_is_cds_variant = (pl.col("has_CDS_clones") == False) & (
+        pl.col("shared_in_frame_CDS_frac") < 1
+    )
+
     if "transcript_biotype" in df.columns:
-        c_bio = pl.col("transcript_biotype") == "protein_coding"
+        c_is_protein_coding = pl.col("transcript_biotype") == "protein_coding"
     else:
-        c_bio = pl.lit(False)
+        # If the column doesn't exist, this condition can never be true
+        c_is_protein_coding = pl.lit(False)
 
-    filter_suffix = ""
-    df_filts = []
-    for _, df_grp in df.group_by("TIS_coord"):
-        df_filt = df_grp.filter(
-            # If annotated CDS then annotated CDS
-            pl.when(c_1.any()).then(c_1)
-            # elif trunc/extension & not CDS clone
-            .when((c_2 & c_clone).any()).then(c_2 & c_clone)
-            # elif type 3 & not CDS variant
-            .when((c_3 & c_cds_var).any()).then(c_3 & c_cds_var)
-            # else OK if not CDS clones and in_frame_CDS_frac < 1
-            .otherwise(c_cds_var)
-            # if either annotated or protein coding present, select these otherwise OK
-            & pl.when((c_1 | c_bio).any()).then(c_1 | c_bio).otherwise(pl.lit(True))
-        )
-        df_filts.append(df_filt)
-    df_filt = pl.concat(df_filts)
+    # --- Main Filtering Logic using Window Functions ---
 
-    return df_filt
+    # First-pass filter to select the highest-priority ORF type within each group
+    primary_filter = (
+        pl.when(c_is_annotated_cds.any().over(TIS_coord))
+        .then(c_is_annotated_cds)
+        .when((c_is_trunc_or_ext & c_is_not_clone).any().over(TIS_coord))
+        .then(c_is_trunc_or_ext & c_is_not_clone)
+        .when((c_is_other_orf & c_is_cds_variant).any().over(TIS_coord))
+        .then(c_is_other_orf & c_is_cds_variant)
+        .otherwise(c_is_cds_variant)
+    )
+
+    # Second-pass filter to prioritize protein-coding transcripts if available
+    secondary_filter = (
+        pl.when((c_is_annotated_cds | c_is_protein_coding).any().over(TIS_coord))
+        .then(c_is_annotated_cds | c_is_protein_coding)
+        .otherwise(pl.lit(True))
+    )
+
+    # Apply both filters to the LazyFrame
+    lf_filt = df.filter(primary_filter & secondary_filter)
+
+    return lf_filt
 
 
 def process_seq_preds(ids, preds, seqs, min_prob):
@@ -889,7 +996,7 @@ def create_multiqc_reports(df, out_prefix, id, name):
     return
 
 
-def csv_to_gtf(h5_path, df, out_prefix, caller):
+def csv_to_gtf(h5_path, df, out_prefix, caller, suffix: str = ""):
     """
     Converts a DataFrame of ORF predictions into a GTF file.
     !!! Creates a unique transcript entry for each ORF to ensure GTF compatibility. !!!
@@ -947,9 +1054,9 @@ def csv_to_gtf(h5_path, df, out_prefix, caller):
 
         # --- 3. Generate feature lines for this specific ORF ---
         TIS, LTS, TTS, strand = (
-            orf["TIS_coord"],
-            orf["LTS_coord"],
-            orf["TTS_coord"],
+            orf[f"TIS_coord{suffix}"],
+            orf[f"LTS_coord{suffix}"],
+            orf[f"TTS_coord{suffix}"],
             orf["strand"],
         )
 

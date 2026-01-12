@@ -14,7 +14,9 @@ from transcript_transformer import (
     PROT_IDX_DICT,
     DNA_IDX_DICT,
     IDX_DNA_DICT,
+    NP_TO_PL_TYPE,
 )
+from typing import Optional
 
 
 HGVS_PATTERNS = {
@@ -146,6 +148,41 @@ def divide_keys_by_size(size_dict, num_chunks):
     folds = zip(sets_k.values(), sets_v.values())
 
     return {i: {x: y for x, y in zip(k, v)} for i, (k, v) in enumerate(folds)}
+
+
+def derive_polars_type(array, sample_size=100):
+    """
+    Recursively determines the Polars dtype for a NumPy array by sampling
+    its elements to robustly handle mixed types and None values.
+    """
+    if array.dtype.kind != "O":
+        return NP_TO_PL_TYPE.get(array.dtype.type, pl.Binary)
+
+    # 1. Filter out any None values, which can't be used for type inference.
+    non_null_elements = [x for x in array if x is not None]
+
+    if not non_null_elements:
+        return pl.List(pl.Null)
+
+    # 2. Take a representative sample to check for mixed types.
+    if len(non_null_elements) > sample_size:
+        sample_indices = np.random.choice(
+            len(non_null_elements), sample_size, replace=False
+        )
+        sample = (non_null_elements[i] for i in sample_indices)
+    else:
+        sample = non_null_elements
+
+    # 3. Recursively find all dtypes present in the sample.
+    subtypes = {derive_polars_type(np.array([item]), sample_size) for item in sample}
+
+    # 4. Determine the common, upcasted dtype for the subtypes.
+    if len(subtypes) > 1:
+        common_subtype = pl.common_dtype(list(subtypes))
+    else:
+        common_subtype = subtypes.pop()
+
+    return pl.List(common_subtype)
 
 
 def find_optimal_folds(seqn_size_dict, test=0.2, val=0.2):
@@ -472,6 +509,7 @@ def parse_hgvs_mutation(hgvs: str) -> Dict:
                         "type": "ins",
                         "start": int(groups[0]) - 1,
                         "alt": groups[2],
+                        "end": int(groups[0]) - 1 + len(groups[2]),
                     }
     except:
         print(f"Omitting mutation {hgvs} due to unsupported HGVS notation.")
@@ -505,19 +543,21 @@ def validate_mutations(mutations: List[Dict]) -> List[Dict]:
 
 
 def alter_sequence(
-    sequence: np.ndarray, y_true: np.ndarray, mutations: List[str]
-) -> Tuple[np.ndarray, np.ndarray]:
+    sequence: np.ndarray, mutations: List[str], y_true: Optional[np.ndarray] = None
+) -> Tuple[np.ndarray, ...]:
     """
     Alters a transcript sequence based on a list of HGVS r. notations.
     This version accepts and returns NumPy arrays.
     """
-    if not mutations:
+    if len(mutations) == 0:
         # Return copies of the original NumPy arrays even if no mutations
-        return sequence.copy(), y_true.copy()
+        if y_true is not None:
+            return sequence.copy(), y_true.copy()
+        return (sequence.copy(),)
 
     # 1. Create copies to prevent modifying the original data
     seq_arr = sequence.copy()
-    y_arr = y_true.copy()
+    y_arr = y_true.copy() if y_true is not None else None
 
     # 2. Parse all mutations into a list of dictionaries
     parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
@@ -529,7 +569,9 @@ def alter_sequence(
         parsed_muts
     )  # Use the non-Polars validate_mutations
     if not validated_muts:
-        return seq_arr, y_arr
+        if y_arr is not None:
+            return seq_arr, y_arr
+        return (seq_arr,)
 
     # 4. Sort valid mutations by start position descending to apply from end to start
     sorted_muts = sorted(validated_muts, key=lambda x: x["start"], reverse=True)
@@ -554,50 +596,63 @@ def alter_sequence(
         elif mut["type"] == "del":
             # Use np.delete for deletions
             seq_arr = np.delete(seq_arr, np.s_[start_idx : end_idx + 1])
-            y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
+            if y_arr is not None:
+                y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
 
         elif mut["type"] == "dup":
             # Duplicate segment and insert
             seq_segment = seq_arr[start_idx : end_idx + 1]
-            y_segment = np.full(len(seq_segment), False, dtype=bool)
 
             # Use np.insert. Inserts BEFORE the given index.
             # We want to insert AFTER end_idx, so at index end_idx + 1.
             seq_arr = np.insert(seq_arr, end_idx + 1, seq_segment)
-            y_arr = np.insert(y_arr, end_idx + 1, y_segment)
+            if y_arr is not None:
+                y_segment = np.full(len(seq_segment), False, dtype=bool)
+                y_arr = np.insert(y_arr, end_idx + 1, y_segment)
 
         elif mut["type"] == "ins":
             # Insert new sequence
             alt_seq_np = np.array(
                 [DNA_IDX_DICT[base] for base in mut["alt"]], dtype=seq_arr.dtype
             )
-            alt_y_np = np.full(len(alt_seq_np), False, dtype=bool)
 
             # Insert at start_idx + 1 (i.e., after start_idx)
             seq_arr = np.insert(seq_arr, start_idx + 1, alt_seq_np)
-            y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
+            if y_arr is not None:
+                alt_y_np = np.full(len(alt_seq_np), False, dtype=bool)
+                y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
 
-    return seq_arr, y_arr
+    if y_arr is not None:
+        return seq_arr, y_arr
+    return (seq_arr,)
 
 
 def alter_ribo_counts(
-    ribo: np.ndarray, y_true: np.ndarray, mutations: List[str]
-) -> Tuple[np.ndarray, np.ndarray]:
+    ribo: np.ndarray | list, mutations: List[str], y_true: Optional[np.ndarray] = None
+) -> Tuple[np.ndarray | list, ...]:
     """
     Alters a transcript ribo_counts based on a list of HGVS r. notations.
     This version accepts and returns NumPy arrays.
     """
-    if not mutations:
+    # Ensure input is a NumPy array for consistent processing
+    if isinstance(ribo, list):
+        ribo = np.array(ribo)
+        to_input_type = lambda x: list(x)
+    else:
+        to_input_type = lambda x: x
+
+    if len(mutations) == 0:
         # Return copies of the original NumPy arrays even if no mutations
-        return ribo.copy(), y_true.copy()
+        if y_true is not None:
+            return ribo.copy(), y_true.copy()
+        return (to_input_type(ribo.copy()),)
 
     # 1. Create copies to prevent modifying the original data
     ribo_arr = ribo.copy()
-    y_arr = y_true.copy()
+    y_arr = y_true.copy() if y_true is not None else None
 
     # 2. Parse all mutations into a list of dictionaries
     parsed_muts = [parse_hgvs_mutation(m) for m in mutations]
-    # remove empty dicts
     parsed_muts = [m for m in parsed_muts if m]
 
     # 3. Validate mutations to remove any that conflict
@@ -605,7 +660,9 @@ def alter_ribo_counts(
         parsed_muts
     )  # Use the non-Polars validate_mutations
     if not validated_muts:
-        return ribo_arr, y_arr
+        if y_arr is not None:
+            return ribo_arr, y_arr
+        return (to_input_type(ribo_arr),)
 
     # 4. Sort valid mutations by start position descending to apply from end to start
     sorted_muts = sorted(validated_muts, key=lambda x: x["start"], reverse=True)
@@ -623,32 +680,37 @@ def alter_ribo_counts(
         elif mut["type"] == "del":
             # Use np.delete for deletions
             ribo_arr = np.delete(ribo_arr, np.s_[start_idx : end_idx + 1], 0)
-            y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
+            if y_arr is not None:
+                y_arr = np.delete(y_arr, np.s_[start_idx : end_idx + 1])
 
         elif mut["type"] == "dup":
             # Duplicate segment and insert
-            ribo_segment = np.full(
-                ribo_arr[start_idx : end_idx + 1].shape, 0, dtype=ribo_arr.dtype
-            )
-            y_segment = np.full(len(ribo_segment), False, dtype=bool)
+            dup_len = (end_idx - start_idx) + 1
+            new_shape = (dup_len,) + ribo_arr.shape[1:]
+            ribo_segment = np.full(new_shape, 0, dtype=ribo_arr.dtype)
+            y_segment = np.full(dup_len, False, dtype=bool)
 
             # Use np.insert. Inserts BEFORE the given index.
             # We want to insert AFTER end_idx, so at index end_idx + 1.
             ribo_arr = np.insert(ribo_arr, end_idx + 1, ribo_segment, axis=0)
-            y_arr = np.insert(y_arr, end_idx + 1, y_segment)
+            if y_arr is not None:
+                y_arr = np.insert(y_arr, end_idx + 1, y_segment)
 
         elif mut["type"] == "ins":
             # Insert new sequence
-            ribo_segment = np.full(
-                ribo_arr[start_idx : end_idx + 1].shape, 0, dtype=ribo_arr.dtype
-            )
-            alt_y_np = np.full(len(ribo_segment), False, dtype=bool)
+            ins_len = len(mut["alt"])
+            new_shape = (ins_len,) + ribo_arr.shape[1:]
+            ribo_segment = np.full(new_shape, 0, dtype=ribo_arr.dtype)
+            alt_y_np = np.full(ins_len, False, dtype=bool)
 
             # Insert at start_idx + 1 (i.e., after start_idx)
             ribo_arr = np.insert(ribo_arr, start_idx + 1, ribo_segment, axis=0)
-            y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
+            if y_arr is not None:
+                y_arr = np.insert(y_arr, start_idx + 1, alt_y_np)
 
-    return ribo_arr, y_arr
+    if y_arr is not None:
+        return to_input_type(ribo_arr), y_arr
+    return (to_input_type(ribo_arr),)
 
 
 def apply_mutations_to_seq(
@@ -665,7 +727,7 @@ def apply_mutations_to_seq(
     Returns:
         The mutated sequence as a list of integers, and a list of indices.
     """
-    if not mutations or len(sequence) == 0:
+    if len(mutations) == 0 or len(sequence) == 0:
         # if no mutations, return empty lists
         return [], [], []
 

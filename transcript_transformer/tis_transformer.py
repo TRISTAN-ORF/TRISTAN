@@ -120,9 +120,11 @@ def main():
         prtime("End of pipeline (omit --data to run full pipeline)...", "\n")
         return 0
     if args.mut_dict:
-        mut_suff = ".mut"
+        mut_suff = ".mut.tt"
+        col_suff = "_refmap"
     else:
         mut_suff = ""
+        col_suff = ""
 
     # --- Determine folds and contigs if relevant ---
     if args.folds is None:
@@ -145,7 +147,9 @@ def main():
     result_file = f"{args.out_prefix}{mut_suff}.npy"
     has_output = os.path.isfile(result_file)
     keep_preds = has_output and (not args.overwrite_preds)
-    print(f"\t -- TIS Transformer output {"not " if not has_output else ""}present: {result_file}")
+    print(
+        f"\t -- TIS Transformer output {'not ' if not has_output else ''}present: {result_file}"
+    )
     if ("trained_model" in args) and keep_preds:
         args.folds = {}  # Basically skip future steps
         req_train = False
@@ -234,15 +238,16 @@ def main():
         multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
         os.makedirs(multiqc_path, exist_ok=True)
         for df, name, path in zip([df, df_filt], names, paths):
-            csv_to_gtf(
-                args.h5_path,
-                df,
-                path,
-                "TIS_Transformer",
-            )
+            csv_to_gtf(args.h5_path, df, path, "TIS_Transformer", suffix=col_suff)
             out = os.path.join(multiqc_path, os.path.basename(path))
             create_multiqc_reports(df, out, "tis_transformer", name)
-        csv_to_gtf(args.h5_path, df_novel, out_prefix + ".novel", "TIS_Transformer")
+        csv_to_gtf(
+            args.h5_path,
+            df_novel,
+            out_prefix + ".novel",
+            "TIS_Transformer",
+            suffix=col_suff,
+        )
 
 
 def align_to_h5_ids(h5_path, tr_ids, data_list, dtype=np.float32):

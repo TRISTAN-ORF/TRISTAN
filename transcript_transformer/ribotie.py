@@ -71,6 +71,7 @@ def main():
         args.backup_path,
         not args.no_backup,
     )
+    assert len(args.ribo_paths) > 0, "No ribosome data specified, use --ribo_paths to specify ribosome data files."
     process_ribo_data(
         args.h5_path,
         args.ribo_paths,
@@ -83,9 +84,11 @@ def main():
         prtime("End of pipeline (omit --data to run full pipeline)...", "\n")
         return 0
     if args.mut_dict:
-        mut_suff = ".mut"
+        mut_suff = ".mut.rt"
+        col_suff = "_refmap"
     else:
         mut_suff = ""
+        col_suff = ""
 
     # --- Determine folds and contigs if relevant ---
     if args.pretrain and (args.folds is None):
@@ -275,10 +278,16 @@ def main():
             multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
             os.makedirs(multiqc_path, exist_ok=True)
             for df, id, name, path in zip([df, df_filt], ids, names, paths):
-                csv_to_gtf(args.h5_path, df, path, "RiboTIE")
+                csv_to_gtf(args.h5_path, df, path, "RiboTIE", suffix=col_suff)
                 out = os.path.join(multiqc_path, os.path.basename(path))
                 create_multiqc_reports(df, out, id, name)
-            csv_to_gtf(args.h5_path, df_novel, out_prefix + ".novel", "RiboTIE")
+            csv_to_gtf(
+                args.h5_path,
+                df_novel,
+                out_prefix + ".novel",
+                "RiboTIE",
+                suffix=col_suff,
+            )
         else:
             print("No positive predictions found")
 

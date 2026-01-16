@@ -203,8 +203,11 @@ def merge_outputs(prefix, keys):
 
 
 def load_args(path, args):
-    with open(path, "r") as fh:
-        input_config = yaml.safe_load(fh)
+    if path.endswith(".tt") or path.endswith(".rt"):
+        input_config = load_bundled_model(path)
+    else:
+        with open(path, "r") as fh:
+            input_config = yaml.safe_load(fh)
     args.__dict__.update(input_config)
 
     return args
@@ -235,6 +238,37 @@ def mv_ckpt_to_out_dir(trainer, out_prefix):
     ckpt_path = os.path.join(trainer.logger.log_dir, "checkpoints")
     weights_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
     shutil.copy(weights_path, f"{out_prefix}.ckpt")
+
+
+def save_bundled_model(out_path, save_dict):
+    import torch
+
+    # If folds contain paths to ckpts, load them and embed them
+    if "trained_model" in save_dict:
+        folds = save_dict["trained_model"]["folds"]
+    elif "pretrained_model" in save_dict:
+        folds = save_dict["pretrained_model"]["folds"]
+    else:
+        folds = {}
+
+    for i, fold in folds.items():
+        if "transfer_checkpoint" in fold:
+            ckpt_path = fold["transfer_checkpoint"]
+            if os.path.isfile(ckpt_path):
+                # Load the full checkpoint
+                checkpoint = torch.load(ckpt_path, map_location="cpu")
+                # Store it in the dict
+                fold["checkpoint_data"] = checkpoint
+                # We can remove the path since it will be bundled
+                # But kept for backward compatibility if needed
+
+    torch.save(save_dict, out_path)
+
+
+def load_bundled_model(path):
+    import torch
+
+    return torch.load(path, map_location="cpu")
 
 
 def transcript_region_to_exons(

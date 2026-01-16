@@ -1,3 +1,7 @@
+# NEW MODEL
+lr : 0.002
+# max_memory : 90000
+
 # input params
 use_seq : true
 input_type: hdf5

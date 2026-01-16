@@ -15,6 +15,7 @@ from .util_functions import (
     find_optimal_folds,
     mv_ckpt_to_out_dir,
     prtime,
+    save_bundled_model,
     load_args,
     merge_outputs,
 )
@@ -143,8 +144,10 @@ def main():
             "patience": 1,
             "lr": 0.0008,
         }
-        with open(f"{args.out_prefix}_pretrain_params.rt.yml", "w+") as file_handle:
-            yaml.dump(save_dict, file_handle, default_flow_style=False)
+        save_bundled_model(f"{args.out_prefix}_pretrain.rt", save_dict)
+        # Remove individual fold checkpoints
+        for i in args.folds.keys():
+            os.remove(f"{args.out_prefix}_pretrain_f{i}.rt.ckpt")
     elif not args.missing_models:
         prtime("Pretraining model: training models on collection of all samples", "\n")
         print(
@@ -232,10 +235,10 @@ def main():
                     "patience": 1,
                     "lr": 0.0008,
                 }
-                with open(
-                    f"{args.out_prefix}_{group}_params.rt.yml", "w+"
-                ) as file_handle:
-                    yaml.dump(save_dict, file_handle, default_flow_style=False)
+                save_bundled_model(f"{args.out_prefix}_{group}.rt", save_dict)
+                # Remove individual fold checkpoints
+                for i in folds.keys():
+                    os.remove(f"{args.out_prefix}_{group}_f{i}.rt.ckpt")
 
     if args.pretrain:
         output_sets = ["pretrain"]

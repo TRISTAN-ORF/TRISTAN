@@ -39,7 +39,7 @@ dependencies = [
     "biobear >= 0.23.7",
     "pyarrow >= 18.0.0",
     "h5max >= 0.3.2",
-    "polars >= 1.28",
+    "polars == 1.35.2",
     "tqdm >= 4.66.2",
     "pyfaidx >= 0.8.1.1",
     "pyranges >= 0.1.4"

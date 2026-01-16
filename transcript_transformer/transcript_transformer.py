@@ -31,20 +31,30 @@ logging.getLogger("pytorch_lightning.accelerators.cuda").addFilter(acc_info_filt
 
 
 def train(args, test_model=True, enable_model_summary=True):
-    if args.transfer_checkpoint:
-        model = TranscriptSeqRiboEmb.load_from_checkpoint(
-            args.transfer_checkpoint,
-            strict=False,
-            use_seq=args.use_seq,
-            use_ribo=args.use_ribo,
-            lr=args.lr,
-            decay_rate=args.decay_rate,
-            warmup_step=args.warmup_steps,
-            max_seq_len=args.max_seq_len,
-            mlm=args.mlm,
-            mask_frac=args.mask_frac,
-            rand_frac=args.rand_frac,
-        )
+    if args.transfer_checkpoint or (hasattr(args, "checkpoint_data") and args.checkpoint_data):
+        if hasattr(args, "checkpoint_data") and args.checkpoint_data:
+            # Load from dictionary
+            model = TranscriptSeqRiboEmb(
+                args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate,
+                args.warmup_steps, args.max_seq_len, args.dim, args.depth, args.heads,
+                False, args.emb_dropout, args.ff_dropout, args.attn_dropout,
+                args.mlm, args.mask_frac, args.rand_frac, args.metrics
+            )
+            model.load_state_dict(args.checkpoint_data["state_dict"])
+        else:
+            model = TranscriptSeqRiboEmb.load_from_checkpoint(
+                args.transfer_checkpoint,
+                strict=False,
+                use_seq=args.use_seq,
+                use_ribo=args.use_ribo,
+                lr=args.lr,
+                decay_rate=args.decay_rate,
+                warmup_step=args.warmup_steps,
+                max_seq_len=args.max_seq_len,
+                mlm=args.mlm,
+                mask_frac=args.mask_frac,
+                rand_frac=args.rand_frac,
+            )
     else:
         model = TranscriptSeqRiboEmb(
             args.use_seq,
@@ -148,16 +158,26 @@ def predict(args, trainer=None, model=None):
             logger=None,
         )
     if model is None:
-        model = TranscriptSeqRiboEmb.load_from_checkpoint(
-            args.transfer_checkpoint,
-            map_location=map_location,
-            strict=False,
-            max_seq_len=args.max_seq_len,
-            mlm=False,
-            mask_frac=0.85,
-            rand_frac=0.15,
-            metrics=[],
-        )
+        if hasattr(args, "checkpoint_data") and args.checkpoint_data:
+            model = TranscriptSeqRiboEmb(
+                args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate,
+                args.warmup_steps, args.max_seq_len, args.dim, args.depth, args.heads,
+                False, args.emb_dropout, args.ff_dropout, args.attn_dropout,
+                args.mlm, args.mask_frac, args.rand_frac, args.metrics
+            )
+            model.load_state_dict(args.checkpoint_data["state_dict"])
+            model.to(map_location)
+        else:
+            model = TranscriptSeqRiboEmb.load_from_checkpoint(
+                args.transfer_checkpoint,
+                map_location=map_location,
+                strict=False,
+                max_seq_len=args.max_seq_len,
+                mlm=False,
+                mask_frac=0.85,
+                rand_frac=0.15,
+                metrics=[],
+            )
         ckpt_path = None
     else:
         ckpt_path = "best"
@@ -196,9 +216,9 @@ def predict(args, trainer=None, model=None):
 
         if hasattr(args, "fasta") and (args.fasta is not None):
             targets = list(itertools.chain(*[o[1] for o in out]))
-            out = [ids, preds, targets]
+            out = [ids, [p.astype(np.float32) for p in preds], targets]
         else:
-            out = [ids, preds]
+            out = [ids, [p.astype(np.float32) for p in preds]]
     else:
         out = []
 

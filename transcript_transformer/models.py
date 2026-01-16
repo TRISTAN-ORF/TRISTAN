@@ -20,7 +20,7 @@ class SinusoidalPositionalEncoding(torch.nn.Module):
         if d_model > 1:
             pe[:, 1:d_model:2] = torch.cos(position * div_term[:d_model//2])
         pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe, persistent=False)
 
     def forward(self, x):
         return x + self.pe[:, :x.size(1), :]
@@ -65,14 +65,21 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                 nhead=heads,
                 dim_feedforward=dim * 4, # Maintain FFN size based on input dim
                 dropout=attn_dropout,
-                activation="relu",
+                activation="gelu",
                 batch_first=True,
+                norm_first=True, # Pre-LayerNorm for stability
             ) for _ in range(depth)
         ])
         
         if self.d_model != dim:
-            self.proj_in = torch.nn.Linear(dim, self.d_model)
-            self.proj_out = torch.nn.Linear(self.d_model, dim)
+            self.proj_in = torch.nn.Sequential(
+                torch.nn.Linear(dim, self.d_model),
+                torch.nn.LayerNorm(self.d_model)
+            )
+            self.proj_out = torch.nn.Sequential(
+                torch.nn.Linear(self.d_model, dim),
+                torch.nn.LayerNorm(dim)
+            )
         else:
             self.proj_in = None
             self.proj_out = None
@@ -105,7 +112,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         self.ff_1 = torch.nn.Linear(dim, dim * 2)
         self.ff_2 = torch.nn.Linear(dim * 2, pos_label)
-        self.relu = torch.nn.ReLU()
+        self.activation = torch.nn.GELU()
         self.dropout = torch.nn.Dropout(emb_dropout)
 
         if use_ribo:
@@ -115,9 +122,9 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             self.tanh = torch.nn.Tanh()
             self.scalar_emb = torch.nn.Sequential(
                 self.ff_emb_1,
-                self.relu,
+                self.activation,
                 self.ff_emb_2,
-                self.relu,
+                self.activation,
                 self.ff_emb_3,
                 self.tanh,
             )
@@ -138,13 +145,14 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                 state_dict.pop(key)
             checkpoint["mlm"] = False
         if "pos_emb.emb" in state_dict:
-            if self.pos_emb.weight.shape != state_dict["pos_emb.emb"].shape:
-                state_dict.pop("pos_emb.emb")
-                state_dict.pop("layer_pos_emb.emb")
-        elif self.pos_emb.weight.shape != state_dict["pos_emb.weight"].shape:
+            state_dict.pop("pos_emb.emb")
+            state_dict.pop("layer_pos_emb.emb", None)
+        if "pos_emb.weight" in state_dict:
             state_dict.pop("pos_emb.weight")
-            # Remove layer_pos_emb.weight if present in old checkpoint (it was there in Performer)
             state_dict.pop("layer_pos_emb.weight", None)
+        if "pos_emb.pe" in state_dict:
+            state_dict.pop("pos_emb.pe")
+
         checkpoint["state_dict"] = state_dict
 
     def parse_embeddings(self, batch):
@@ -244,7 +252,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         x = x.view(-1, self.hparams.dim)
 
         # Feed forward
-        x = F.relu(self.ff_1(x))
+        x = self.activation(self.ff_1(x))
         x = self.ff_2(x)
 
         return x.float(), y_true, y_mask

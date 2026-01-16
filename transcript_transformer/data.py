@@ -186,7 +186,7 @@ def save_transcriptome_to_h5(f, db):
         if db[key].dtype == pl.String:
             array = [a if a != None else "" for a in db[key]]
             max_char_len = db[key].str.len_chars().max()
-            if (max_char_len is not None) & (max_char_len > 0):
+            if (max_char_len is not None) and (max_char_len > 0):
                 grp.create_dataset(key, data=array, dtype=f"<S{max_char_len}")
             else:
                 continue

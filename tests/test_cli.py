@@ -79,7 +79,7 @@ def test_sequence_training():
 
     subprocess.run(command, check=True, text=True, capture_output=True)
 
-    assert_if_exists(files)
+    assert_if_exists(files + ["out/tt_training.tt"])
 
 
 def test_sequence_predicting():
@@ -145,14 +145,11 @@ def test_rt_bam_data_loading():
 
 def test_rt_pretraining():
     files = [
-        f"out/rt_pretraining_pretrain_f{i}.rt.{ext}"
-        for i, ext in list(product(range(2), ["ckpt"]))
-    ] + [
         f"out/rt_pretraining_pretrain.{ext}"
         for ext in ["csv", "gtf", "redundant.csv", "redundant.gtf"]
     ]
 
-    remove_if_exists(files)
+    remove_if_exists(files + ["out/rt_pretraining_pretrain.rt"])
 
     command = [
         "ribotie",
@@ -160,7 +157,7 @@ def test_rt_pretraining():
     ]
     subprocess.run(command, check=True, text=True, capture_output=True)
 
-    assert_if_exists(files)
+    assert_if_exists(files + ["out/rt_pretraining_pretrain.rt"])
 
 
 def test_rt_training():

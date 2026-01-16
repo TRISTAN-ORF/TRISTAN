@@ -8,7 +8,7 @@ from typing import cast
 from importlib.resources import files
 
 from transcript_transformer import TT_DICT
-from .util_functions import load_args
+from .util_functions import load_args, load_bundled_model
 
 
 class Parser(argparse.ArgumentParser):
@@ -398,16 +398,20 @@ class Parser(argparse.ArgumentParser):
         # update default values (before --help is called)
         model_dir = None
         for conf in configs:
-            with open(conf, "r") as f:
-                if conf[-4:] == "json":
-                    input_config = json.load(f)
-                else:
-                    input_config = yaml.safe_load(f)
-                if ("pretrained_model" in input_config.keys()) or (
-                    "trained_model" in input_config.keys()
-                ):
-                    model_dir = os.path.dirname(os.path.realpath(f.name))
-                self.set_defaults(**input_config)
+            if conf.endswith(".tt") or conf.endswith(".rt"):
+
+                input_config = load_bundled_model(conf)
+            else:
+                with open(conf, "r") as f:
+                    if conf[-4:] == "json":
+                        input_config = json.load(f)
+                    else:
+                        input_config = yaml.safe_load(f)
+            if ("pretrained_model" in input_config.keys()) or (
+                "trained_model" in input_config.keys()
+            ):
+                model_dir = os.path.dirname(os.path.realpath(conf))
+            self.set_defaults(**input_config)
 
         # if no arguments are passed, print help
         if len(argv) == 0:
@@ -415,23 +419,28 @@ class Parser(argparse.ArgumentParser):
         args = self.parse_args(argv)
         # read passed config files
         for conf in args.conf:
-            with open(conf, "r") as f:
-                # Load config file
-                try:
-                    if conf[-4:] == "json":
-                        input_config = json.load(f)
-                    else:
-                        input_config = yaml.safe_load(f)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to load config file '{conf}': {e}. Is this a valid YAML or JSON file?"
-                    )
+            if conf.endswith(".tt") or conf.endswith(".rt"):
+                from .util_functions import load_bundled_model
 
-                if ("pretrained_model" in input_config.keys()) or (
-                    "trained_model" in input_config.keys()
-                ):
-                    model_dir = os.path.dirname(os.path.realpath(f.name))
-                self.set_defaults(**input_config)
+                input_config = load_bundled_model(conf)
+            else:
+                with open(conf, "r") as f:
+                    # Load config file
+                    try:
+                        if conf[-4:] == "json":
+                            input_config = json.load(f)
+                        else:
+                            input_config = yaml.safe_load(f)
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Failed to load config file '{conf}': {e}. Is this a valid YAML or JSON file?"
+                        )
+
+            if ("pretrained_model" in input_config.keys()) or (
+                "trained_model" in input_config.keys()
+            ):
+                model_dir = os.path.dirname(os.path.realpath(conf))
+            self.set_defaults(**input_config)
 
         # --- Config parameter parsing ---
         # Parse h5_path properly

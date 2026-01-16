@@ -13,6 +13,7 @@ from .util_functions import (
     find_optimal_folds,
     prtime,
     mv_ckpt_to_out_dir,
+    save_bundled_model,
     merge_outputs,
     parse_fasta,
 )
@@ -193,12 +194,14 @@ def main():
         merge_outputs(args.out_prefix, args.folds.keys())
         # remove independent fold outputs
         [os.remove(f"{args.out_prefix}_f{i}.npy") for i in args.folds.keys()]
-        # Save params file
+        # Save bundled model file
         if req_train:
             args.folds[0]["test"] = []
             save_dict = {"trained_model": {"folds": args.folds}}
-            with open(f"{args.out_prefix}_params.tt.yml", "w+") as f:
-                yaml.dump(save_dict, f, default_flow_style=False)
+            save_bundled_model(f"{args.out_prefix}.tt", save_dict)
+            # Remove individual checkpoints to keep only the bundled one
+            for i in args.folds.keys():
+                os.remove(f"{args.out_prefix}_f{i}.tt.ckpt")
 
     # load predictions
     out = np.load(f"{args.out_prefix}.npy", allow_pickle=True)

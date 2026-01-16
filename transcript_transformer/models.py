@@ -2,11 +2,28 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import torchmetrics as tm
-from performer_pytorch import Performer
-from performer_pytorch.performer_pytorch import FixedPositionalEmbedding
+
 from torch.nn.modules.activation import ReLU
 
 torch.serialization.add_safe_globals([ReLU])
+
+import math
+
+class SinusoidalPositionalEncoding(torch.nn.Module):
+    def __init__(self, d_model, max_len=30002):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        # Handle odd d_model
+        pe[:, 0:d_model:2] = torch.sin(position * div_term[:(d_model+1)//2])
+        if d_model > 1:
+            pe[:, 1:d_model:2] = torch.cos(position * div_term[:d_model//2])
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1), :]
 
 
 class TranscriptSeqRiboEmb(pl.LightningModule):
@@ -22,22 +39,10 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         dim,
         depth,
         heads,
-        dim_head,
         causal,
-        nb_features,
-        feature_redraw_interval,
-        generalized_attention,
-        reversible,
-        ff_chunks,
-        use_scalenorm,
-        use_rezero,
-        tie_embed,
-        ff_glu,
         emb_dropout,
         ff_dropout,
         attn_dropout,
-        local_attn_heads,
-        local_window_size,
         mlm,
         mask_frac,
         rand_frac,
@@ -45,26 +50,32 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.transformer = Performer(
-            dim=dim,
-            depth=depth,
-            heads=heads,
-            dim_head=dim_head,
-            causal=causal,
-            nb_features=nb_features,
-            feature_redraw_interval=feature_redraw_interval,
-            generalized_attention=generalized_attention,
-            kernel_fn=torch.nn.ReLU(),
-            reversible=reversible,
-            ff_chunks=ff_chunks,
-            use_scalenorm=use_scalenorm,
-            use_rezero=use_rezero,
-            ff_glu=ff_glu,
-            ff_dropout=ff_dropout,
-            attn_dropout=attn_dropout,
-            local_attn_heads=local_attn_heads,
-            local_window_size=local_window_size,
-        )
+        
+        # Ensure d_model allows for valid head_dim for Flash Attention (>= 8 typically better)
+        # Bumping to 16 to better match the capacity of the original Performer implementation
+        head_dim = dim // heads
+        if head_dim < 16:
+            self.d_model = heads * 16
+        else:
+            self.d_model = dim
+            
+        self.layers = torch.nn.ModuleList([
+            torch.nn.TransformerEncoderLayer(
+                d_model=self.d_model,
+                nhead=heads,
+                dim_feedforward=dim * 4, # Maintain FFN size based on input dim
+                dropout=attn_dropout,
+                activation="relu",
+                batch_first=True,
+            ) for _ in range(depth)
+        ])
+        
+        if self.d_model != dim:
+            self.proj_in = torch.nn.Linear(dim, self.d_model)
+            self.proj_out = torch.nn.Linear(self.d_model, dim)
+        else:
+            self.proj_in = None
+            self.proj_out = None
 
         if mlm in ["ribo", "seq"]:
             self.mlm = True
@@ -115,8 +126,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         if use_seq:
             self.nuc_emb = torch.nn.Embedding(num_tokens, dim)
 
-        self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len + 2)
-        self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len + 2)
+        self.pos_emb = SinusoidalPositionalEncoding(dim, max_seq_len + 2)
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["mlm"] = self.mlm
@@ -127,9 +137,14 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             for key in ["ff_2.weight", "ff_2.bias", "ff_1.weight", "ff_1.bias"]:
                 state_dict.pop(key)
             checkpoint["mlm"] = False
-        if self.pos_emb.emb.shape != state_dict["pos_emb.emb"].shape:
-            state_dict.pop("pos_emb.emb")
-            state_dict.pop("layer_pos_emb.emb")
+        if "pos_emb.emb" in state_dict:
+            if self.pos_emb.weight.shape != state_dict["pos_emb.emb"].shape:
+                state_dict.pop("pos_emb.emb")
+                state_dict.pop("layer_pos_emb.emb")
+        elif self.pos_emb.weight.shape != state_dict["pos_emb.weight"].shape:
+            state_dict.pop("pos_emb.weight")
+            # Remove layer_pos_emb.weight if present in old checkpoint (it was there in Performer)
+            state_dict.pop("layer_pos_emb.weight", None)
         checkpoint["state_dict"] = state_dict
 
     def parse_embeddings(self, batch):
@@ -203,18 +218,36 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         else:
             y_true = batch["y"][y_mask].view(-1)
 
-        x += self.pos_emb(x)
+        x = self.pos_emb(x)
         x = self.dropout(x)
 
-        layer_pos_emb = self.layer_pos_emb(x)
-        x = self.transformer(x, pos_emb=layer_pos_emb, mask=x_mask)
+        if self.proj_in is not None:
+            x = self.proj_in(x)
+            
+        x = x.contiguous() # Ensure contiguity for kernels
+
+        # Use modern sdpa_kernel context manager
+        # Force Flash Attention (disable math and mem_efficient to test compatibility)
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.FLASH_ATTENTION, torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION]):
+            # Manual loop over layers
+            with torch.autocast(device_type='cuda', dtype=torch.float16): # or bfloat16
+                for layer in self.layers:
+                    x = layer(x, src_key_padding_mask=~x_mask.bool())
+
+        
+        # Projection back from (B, L, d_model) to (B, L, dim).
+        if self.proj_out is not None:
+            x = self.proj_out(x)
+
+        # Select valid tokens
         x = x[torch.logical_and(x_mask, y_mask)]
         x = x.view(-1, self.hparams.dim)
 
+        # Feed forward
         x = F.relu(self.ff_1(x))
         x = self.ff_2(x)
 
-        return x, y_true, y_mask
+        return x.float(), y_true, y_mask
 
     def training_step(self, batch, batch_idx):
         y_hat, y_true, _ = self(batch)

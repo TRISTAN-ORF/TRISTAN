@@ -141,6 +141,7 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
             .list.gather_every(3)
             .list.sum()
             .truediv(pl.col("reads_in_ORF").list.sum())
+            .cast(pl.Float32)
         ),
         reads_5UTR=(pl.col("reads").list.slice(0, pl.col("TIS_idx")).list.sum()),
         reads_3UTR=(
@@ -155,21 +156,23 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
             .truediv(pl.col("reads_in_ORF").list.sum())
             .sub(0.5)
             .mul(2)
+            .cast(pl.Float32)
         ),
         reads_coverage_frac=(
             pl.col("reads_in_ORF")
             .list.eval((pl.element() > 0))
             .list.sum()
             .truediv(pl.col("reads_in_ORF").list.len())
+            .cast(pl.Float32)
         ),
         reads_entropy=(
             pl.col("reads_in_ORF").map_elements(
-                lambda x: entropy(x, np.full(len(x), 1) / len(x)),
+                lambda x: np.float32(entropy(x, np.full(len(x), 1) / len(x))),
                 return_dtype=pl.Float32,
             )
         ),
     )
-    return df_ribo.fill_nan(0)
+    return df_ribo.fill_nan(0).cast({pl.Float64: pl.Float32}, strict=False)
 
 
 def parse_CDS_overlap(df, df_CDS):
@@ -406,7 +409,7 @@ def construct_output_table(
         pl.col("exon_coords").map_elements(list, pl.List(pl.Int64)),
         pl.col("CDS_coords").map_elements(list, pl.List(pl.Int64)),
         pl.col("CDS_idxs").map_elements(list, pl.List(pl.Int64)),
-        pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float64)),
+        pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float32)),
         pl.col(pl.Binary).cast(pl.String),
     )
     # Explode df to get ORF predictions per row
@@ -712,7 +715,7 @@ def construct_output_table(
         df_grps.append(df_grp)
 
     df = pl.concat(df_grps)
-    df = df.with_columns(pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len")))
+    df = df.with_columns(pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len")).cast(pl.Float32))
     # Change ORF_coord delimiter to ";"
     if return_ORF_coords:
         df = df.with_columns(

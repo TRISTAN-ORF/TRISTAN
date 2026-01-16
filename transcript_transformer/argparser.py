@@ -214,54 +214,6 @@ class Parser(argparse.ArgumentParser):
             help="Number of attention heads in every layer.",
         )
         tf_parse.add_argument(
-            "--dim_head",
-            type=int,
-            default=16,
-            help="Dimension of the attention head matrices.",
-        )
-        tf_parse.add_argument(
-            "--nb_features",
-            type=int,
-            default=80,
-            help="Number of random features, if not set, will default to (d * log(d)), "
-            "where d is the dimension of each head.",
-        )
-        tf_parse.add_argument(
-            "--feature_redraw_interval",
-            type=int,
-            default=1000,
-            help="How frequently to redraw the projection matrix.",
-        )
-        tf_parse.add_argument(
-            "--no_generalized_attention",
-            action="store_false",
-            help="Applies generalized attention functions.",
-        )
-        tf_parse.add_argument(
-            "--reversible",
-            action="store_true",
-            help="Reversible layers, from Reformer paper.",
-        )
-        tf_parse.add_argument(
-            "--ff_chunks",
-            type=int,
-            default=1,
-            help="Chunk feedforward layer, from Reformer paper.",
-        )
-        tf_parse.add_argument(
-            "--use_scalenorm",
-            action="store_true",
-            help="Use scale norm, from 'Transformers without Tears' paper.",
-        )
-        tf_parse.add_argument(
-            "--use_rezero",
-            action="store_true",
-            help="Use rezero, from 'Rezero is all you need' paper.",
-        )
-        tf_parse.add_argument(
-            "--ff_glu", action="store_true", help="Use GLU variant for feedforward."
-        )
-        tf_parse.add_argument(
             "--emb_dropout", type=float, default=0.1, help="Embedding dropout."
         )
         tf_parse.add_argument(
@@ -270,18 +222,8 @@ class Parser(argparse.ArgumentParser):
         tf_parse.add_argument(
             "--attn_dropout", type=float, default=0.1, help="Post-attention dropout."
         )
-        tf_parse.add_argument(
-            "--local_attn_heads",
-            type=int,
-            default=4,
-            help="The amount of heads used for local attention.",
-        )
-        tf_parse.add_argument(
-            "--local_window_size",
-            type=int,
-            default=256,
-            help="Window size of local attention.",
-        )
+
+
 
         return tf_parse
 

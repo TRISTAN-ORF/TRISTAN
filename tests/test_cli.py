@@ -92,7 +92,7 @@ def test_sequence_predicting():
     command = [
         "tis_transformer",
         "configs/tt_predicting.yml",
-        "data/tt_params.yml",
+        "data/tt.ckpt.tt",
     ]
 
     subprocess.run(command, check=True, text=True, capture_output=True)

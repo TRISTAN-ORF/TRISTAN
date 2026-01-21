@@ -96,7 +96,15 @@ def main():
         tr_ids, tr_seqs = parse_fasta(args.fasta, args.max_seq_len)
         mask = [np.where(pred > args.prob_cutoff)[0] for pred in pred_list]
         if len(np.hstack(mask)) > 0:
-            df = process_seq_preds(tr_ids, pred_list, tr_seqs, args.prob_cutoff)
+            df = process_seq_preds(
+                tr_ids,
+                pred_list,
+                tr_seqs,
+                args.prob_cutoff,
+                args.start_codons,
+                args.min_ORF_len,
+                args.include_invalid_TTS,
+            )
             print(df)
             df.write_csv(f"{args.out_prefix}.csv")
             print(f"\t -- Sites of interest saved to '{args.out_prefix}.csv'")

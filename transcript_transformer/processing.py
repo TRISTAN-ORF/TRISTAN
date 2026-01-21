@@ -1,4 +1,5 @@
 import numpy as np
+import re
 from tqdm import tqdm
 import h5py
 import polars as pl
@@ -800,7 +801,15 @@ def filter_CDS_variants(df):
     return df_filt
 
 
-def process_seq_preds(ids, preds, seqs, min_prob):
+def process_seq_preds(
+    ids,
+    preds,
+    seqs,
+    min_prob,
+    start_codons=".*TG$",
+    min_ORF_len=15,
+    include_invalid_TTS=False,
+):
     # Find indices above min_prob for each prediction
     mask = [np.where(pred > min_prob)[0] for pred in preds]
 
@@ -810,21 +819,40 @@ def process_seq_preds(ids, preds, seqs, min_prob):
         for idx in idxs:
             prot_seq, has_stop, stop_codon = construct_prot(tr[idx:])
             TTS_pos = idx + len(prot_seq) * 3
-            rows.append(
-                {
-                    "transcript_id": ids[i],
-                    "transcript_length": len(tr),
-                    "TIS_pos": idx + 1,
-                    "output": preds[i][idx],
-                    "start_codon": tr[idx : idx + 3],
-                    "TTS_pos": TTS_pos,
-                    "stop_codon": stop_codon,
-                    "TTS_on_transcript": has_stop,
-                    "protein_length": len(prot_seq),
-                    "protein_sequence": prot_seq,
-                }
-            )
-    return pl.DataFrame(rows)
+            start_codon = tr[idx : idx + 3]
+            cond_1 = re.search(start_codons, start_codon)
+            cond_2 = len(prot_seq) * 3 >= min_ORF_len
+            cond_3 = has_stop or include_invalid_TTS
+            if cond_1 and cond_2 and cond_3:
+                rows.append(
+                    {
+                        "transcript_id": ids[i],
+                        "transcript_length": len(tr),
+                        "TIS_pos": idx + 1,
+                        "output": preds[i][idx],
+                        "start_codon": start_codon,
+                        "TTS_pos": TTS_pos,
+                        "stop_codon": stop_codon,
+                        "TTS_on_transcript": has_stop,
+                        "protein_length": len(prot_seq),
+                        "protein_sequence": prot_seq,
+                    }
+                )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "transcript_id": pl.String,
+            "transcript_length": pl.Int64,
+            "TIS_pos": pl.Int64,
+            "output": pl.Float64,
+            "start_codon": pl.String,
+            "TTS_pos": pl.Int64,
+            "stop_codon": pl.String,
+            "TTS_on_transcript": pl.Boolean,
+            "protein_length": pl.Int64,
+            "protein_sequence": pl.String,
+        },
+    )
 
 
 def create_multiqc_reports(df, out_prefix, id, name):

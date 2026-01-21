@@ -1,6 +1,6 @@
 # NEW MODEL
-lr : 0.002
-# max_memory : 90000
+lr : 0.00013
+max_memory : 30000
 
 # input params
 use_seq : true
@@ -14,7 +14,7 @@ id_path : transcript_id
 prob_cutoff : 0.03
 # model architecture
 num_tokens: 8
-dim: 48
+dim: 64
 depth: 8
 heads: 8
 dim_head: 16
@@ -23,6 +23,7 @@ emb_dropout: 0.1
 ff_dropout: 0.1
 attn_dropout: 0.1
 local_window_size: 256
+local_attn_heads: 6
 # internal params
 mlm : false
 mask_frac : false

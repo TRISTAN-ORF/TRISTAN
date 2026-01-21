@@ -58,7 +58,7 @@ class HybridFlashBlock(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
 
         # Fused projection for efficiency
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=True)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.norm2 = nn.LayerNorm(dim)
@@ -118,17 +118,59 @@ class HybridFlashBlock(nn.Module):
 
         # --- BRANCH A: Local Attention (O(N)) ---
         if q_l is not None:
-            # Reshape: (B, H, N_pad, D) -> (B * Num_Windows, H, Window_Size, D)
+            # Reshape Q: (B, H, N_pad, D) -> (B * Num_Windows, H, Window_Size, D)
             q_l = rearrange(q_l, "b h (nw w) d -> (b nw) h w d", w=window)
-            k_l = rearrange(k_l, "b h (nw w) d -> (b nw) h w d", w=window)
-            v_l = rearrange(v_l, "b h (nw w) d -> (b nw) h w d", w=window)
 
-            # Local Mask: (B, N_pad) -> (B * Num_Windows, 1, 1, Window_Size)
+            # For K and V, we need overlap: [Prev, Curr, Next] window
+            # First, standard reshape: (B, H, Num_Windows, Window_Size, D)
+            k_l_img = rearrange(k_l, "b h (nw w) d -> b h nw w d", w=window)
+            v_l_img = rearrange(v_l, "b h (nw w) d -> b h nw w d", w=window)
+
+            # Pad "Num_Windows" dimension by 1 on each side for boundary conditions
+            # (B, H, NW+2, W, D)
+            # We use a large negative value for masking or zero for padding?
+            # Zero padding is safe for values, SDPA will handle attention via masking if needed.
+            # But simpler: just pad and let attention sort it out.
+            # LocalAttention uses cyclic padding or zero padding. Standard is zero padding.
+            k_l_padded = F.pad(k_l_img, (0, 0, 0, 0, 1, 1), value=0.0)
+            v_l_padded = F.pad(v_l_img, (0, 0, 0, 0, 1, 1), value=0.0)
+
+            # Create overlapping windows using unfold on the "Num_Windows" dimension (dim=2)
+            # Unfold(dimension, size, step) -> (..., size, ...)
+            # We want size=3 (prev, curr, next)
+            # Input: (B, H, NW+2, W, D)
+            # Output: (B, H, NW, 3, W, D) ? No, unfold adds dimension at end.
+            # dim=2 corresponds to NW dimension.
+            k_l_unfolded = k_l_padded.unfold(dimension=2, size=3, step=1)
+            v_l_unfolded = v_l_padded.unfold(dimension=2, size=3, step=1)
+
+            # Reshape to merge 3 windows into sequence length: (3 * W)
+            # Structure: (B, H, Num_Windows, W, D, 3) -> rearrange to (B*NW, H, 3*W, D)
+            k_l = rearrange(
+                k_l_unfolded, "b h nw w d three -> (b nw) h (three w) d", three=3
+            )
+            v_l = rearrange(
+                v_l_unfolded, "b h nw w d three -> (b nw) h (three w) d", three=3
+            )
+
+            # Local Mask: We need to adjust for the 3x window size
             attn_mask_l = None
             if mask_padded is not None:
-                attn_mask_l = rearrange(mask_padded, "b (nw w) -> (b nw) 1 1 w", w=window)
+                # Original mask: (B, Num_Windows * W)
+                mask_img = rearrange(mask_padded, "b (nw w) -> b nw w", w=window)
+                # Pad NW dim
+                mask_padded_img = F.pad(mask_img, (0, 0, 1, 1), value=False)
+                # Unfold
+                mask_unfolded = mask_padded_img.unfold(dimension=1, size=3, step=1)
+                # Reshape: (B, NW, W, 3) -> (B*NW, 1, 1, 3*W)
+                # Note: 'three' is last dim after unfold on dim 1
+                attn_mask_l = rearrange(
+                    mask_unfolded, "b nw w three -> (b nw) 1 1 (three w)", three=3
+                )
 
             # Flash Attention on Windows with fallback
+            # Q: (Batch*, H, W, D)
+            # K, V: (Batch*, H, 3*W, D)
             with torch.nn.attention.sdpa_kernel(
                 [
                     torch.nn.attention.SDPBackend.FLASH_ATTENTION,
@@ -142,7 +184,7 @@ class HybridFlashBlock(nn.Module):
                     v_l,
                     attn_mask=attn_mask_l,
                     dropout_p=0.1 if self.training else 0.0,
-                    is_causal=False,  # Local windows are dense
+                    is_causal=False,  # Local windows are dense (non-causal local)
                 )
 
             # Reshape Back
@@ -236,6 +278,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         mask_frac,
         rand_frac,
         metrics,
+        scheduler,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -363,6 +406,25 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         return x.float(), y_true, y_mask
 
+    def on_load_checkpoint(self, checkpoint):
+        state_dict = checkpoint["state_dict"]
+        if not self.mlm and "mlm" in checkpoint.keys() and checkpoint["mlm"]:
+            for key in ["ff_2.weight", "ff_2.bias", "ff_1.weight", "ff_1.bias"]:
+                state_dict.pop(key)
+            checkpoint["mlm"] = False
+        # Unconditionally restore the fixed positional embedding from the current model
+        state_dict["pos_emb.emb"] = self.pos_emb.emb
+        checkpoint["state_dict"] = state_dict
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint["mlm"] = self.mlm
+        # We don't need to save fixed positional embeddings
+        # They are registered buffers but we want to exclude them to save space
+        if "state_dict" in checkpoint:
+            keys_to_remove = [k for k in checkpoint["state_dict"].keys() if "pos_emb.emb" in k]
+            for key in keys_to_remove:
+                del checkpoint["state_dict"][key]
+
     # --- Helper Methods (Preserved from your original) ---
 
     def parse_embeddings(self, batch):
@@ -422,9 +484,22 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
-            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.decay_rate
+            self.parameters(), lr=self.hparams.lr, weight_decay=1e-2
         )
-        return optimizer
+        
+        if self.hparams.scheduler == "decay":
+            scheduler = torch.optim.lr_scheduler.MultiplicativeLR(
+                optimizer, lr_lambda=lambda epoch: self.hparams.decay_rate
+            )
+        elif self.hparams.scheduler == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=self.trainer.max_epochs
+            )
+            
+        else:
+            raise ValueError(f"Invalid scheduler: {self.hparams.scheduler}")
+
+        return [optimizer], [scheduler]
 
     def training_step(self, batch, batch_idx):
         y_hat, y_true, y_mask = self(batch)
@@ -491,23 +566,13 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         return probs_grouped, trues_grouped, batch["x_id"]
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-
-        def lambda1(epoch):
-            return self.hparams.decay_rate
-
-        scheduler = torch.optim.lr_scheduler.MultiplicativeLR(
-            optimizer, lr_lambda=lambda1
-        )
-
-        return [optimizer], [scheduler]
-
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
+        # Warmup logic
         if self.trainer.global_step < self.hparams.warmup_steps:
             lr_scale = min(
                 1.0, float(self.trainer.global_step + 1) / self.hparams.warmup_steps
             )
             for pg in optimizer.param_groups:
                 pg["lr"] = lr_scale * self.hparams.lr
+        
         optimizer.step(closure=optimizer_closure)

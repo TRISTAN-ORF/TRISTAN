@@ -17,6 +17,8 @@ from .transcript_loader import (
 )
 from .util_functions import DNA2vec, parse_fasta
 
+from pdb import set_trace
+
 
 def device_info_filter(record):
     return "PU available: " not in record.getMessage()
@@ -31,14 +33,34 @@ logging.getLogger("pytorch_lightning.accelerators.cuda").addFilter(acc_info_filt
 
 
 def train(args, test_model=True, enable_model_summary=True):
-    if args.transfer_checkpoint or (hasattr(args, "checkpoint_data") and args.checkpoint_data):
+    if args.transfer_checkpoint or (
+        hasattr(args, "checkpoint_data") and args.checkpoint_data
+    ):
         if hasattr(args, "checkpoint_data") and args.checkpoint_data:
             # Load from dictionary
             model = TranscriptSeqRiboEmb(
-                args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate,
-                args.warmup_steps, args.max_seq_len, args.dim, args.depth, args.heads,
-                False, args.emb_dropout, args.ff_dropout, args.attn_dropout,
-                args.mlm, args.mask_frac, args.rand_frac, args.metrics
+                args.use_seq,
+                args.use_ribo,
+                args.num_tokens,
+                args.lr,
+                args.decay_rate,
+                args.warmup_steps,
+                args.max_seq_len,
+                args.dim,
+                args.depth,
+                args.heads,
+                args.dim_head,
+                False,
+                args.emb_dropout,
+                args.ff_dropout,
+                args.attn_dropout,
+                args.local_attn_heads,
+                args.local_window_size,
+                args.mlm,
+                args.mask_frac,
+                args.rand_frac,
+                args.metrics,
+                args.scheduler,
             )
             model.load_state_dict(args.checkpoint_data["state_dict"])
         else:
@@ -49,8 +71,14 @@ def train(args, test_model=True, enable_model_summary=True):
                 use_ribo=args.use_ribo,
                 lr=args.lr,
                 decay_rate=args.decay_rate,
-                warmup_step=args.warmup_steps,
+                warmup_steps=args.warmup_steps,
                 max_seq_len=args.max_seq_len,
+                dim=args.dim,
+                depth=args.depth,
+                heads=args.heads,
+                dim_head=args.dim_head,
+                local_attn_heads=args.local_attn_heads,
+                local_window_size=args.local_window_size,
                 mlm=args.mlm,
                 mask_frac=args.mask_frac,
                 rand_frac=args.rand_frac,
@@ -67,14 +95,18 @@ def train(args, test_model=True, enable_model_summary=True):
             args.dim,
             args.depth,
             args.heads,
+            args.dim_head,
             False,
             args.emb_dropout,
             args.ff_dropout,
             args.attn_dropout,
+            args.local_attn_heads,
+            args.local_window_size,
             args.mlm,
             args.mask_frac,
             args.rand_frac,
             args.metrics,
+            args.scheduler,
         )
     tr_loader = h5pyDataModule(
         args.h5_path,
@@ -107,34 +139,28 @@ def train(args, test_model=True, enable_model_summary=True):
     tb_logger = pl.loggers.TensorBoardLogger(
         ".", os.path.join(log_dir, os.path.basename(args.out_prefix))
     )
-    if args.debug:
-        trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
-            max_epochs=args.max_epochs,
-            reload_dataloaders_every_n_epochs=1,
-            enable_model_summary=enable_model_summary,
-            callbacks=[
-                EarlyStopping(monitor="val_loss", mode="min", patience=args.patience)
-            ],
-            enable_checkpointing=False,
-            logger=False,
-        )
-    else:
-        trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
-            max_epochs=args.max_epochs,
-            reload_dataloaders_every_n_epochs=1,
-            enable_model_summary=enable_model_summary,
-            callbacks=[
-                checkpoint_callback,
-                EarlyStopping(monitor="val_loss", mode="min", patience=args.patience),
-            ],
-            logger=tb_logger,
-        )
+
+    trainer = pl.Trainer(
+        accelerator=args.accelerator,
+        strategy=args.strategy,
+        devices=args.devices,
+        precision=args.precision,
+        max_epochs=args.max_epochs,
+        reload_dataloaders_every_n_epochs=1,
+        enable_model_summary=enable_model_summary,
+        callbacks=[
+            checkpoint_callback,
+            EarlyStopping(monitor="val_loss", mode="min", patience=args.patience),
+        ],
+        logger=tb_logger if not args.debug else False,
+        enable_checkpointing=not args.debug,
+    )
+
+    
+    # Calculate and log trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\t -- Number of learnable parameters: {trainable_params:,}")
+
     trainer.fit(model, datamodule=tr_loader)
     if test_model:
         print(trainer.checkpoint_callbacks)
@@ -151,19 +177,39 @@ def predict(args, trainer=None, model=None):
 
     if trainer is None:
         trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
+            accelerator=args.accelerator,
+            strategy=args.strategy,
+            devices=args.devices,
+            precision=args.precision,
             enable_checkpointing=False,
             logger=None,
         )
+
     if model is None:
         if hasattr(args, "checkpoint_data") and args.checkpoint_data:
             model = TranscriptSeqRiboEmb(
-                args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate,
-                args.warmup_steps, args.max_seq_len, args.dim, args.depth, args.heads,
-                False, args.emb_dropout, args.ff_dropout, args.attn_dropout,
-                args.mlm, args.mask_frac, args.rand_frac, args.metrics
+                args.use_seq,
+                args.use_ribo,
+                args.num_tokens,
+                args.lr,
+                args.decay_rate,
+                args.warmup_steps,
+                args.max_seq_len,
+                args.dim,
+                args.depth,
+                args.heads,
+                args.dim_head,
+                False,
+                args.emb_dropout,
+                args.ff_dropout,
+                args.attn_dropout,
+                args.local_attn_heads,
+                args.local_window_size,
+                args.mlm,
+                args.mask_frac,
+                args.rand_frac,
+                args.metrics,
+                args.scheduler,
             )
             model.load_state_dict(args.checkpoint_data["state_dict"])
             model.to(map_location)
@@ -173,6 +219,12 @@ def predict(args, trainer=None, model=None):
                 map_location=map_location,
                 strict=False,
                 max_seq_len=args.max_seq_len,
+                dim=args.dim,
+                depth=args.depth,
+                heads=args.heads,
+                dim_head=args.dim_head,
+                local_attn_heads=args.local_attn_heads,
+                local_window_size=args.local_window_size,
                 mlm=False,
                 mask_frac=0.85,
                 rand_frac=0.15,
@@ -181,6 +233,7 @@ def predict(args, trainer=None, model=None):
         ckpt_path = None
     else:
         ckpt_path = "best"
+
     if not hasattr(args, "fasta") or args.fasta is None:
         tr_loader = h5pyDataModule(
             args.h5_path,

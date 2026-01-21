@@ -190,6 +190,13 @@ class Parser(argparse.ArgumentParser):
         comp_parse.add_argument(
             "--devices", type=int, default=1, nargs="+", help="GPU device to use."
         )
+        comp_parse.add_argument(
+            "--precision",
+            type=str,
+            choices=["16-mixed", "bf16-mixed", "32-true", "64-true"],
+            default="32-true",
+            help="Mixed precision training setting.",
+        )
 
         return comp_parse
 
@@ -214,6 +221,12 @@ class Parser(argparse.ArgumentParser):
             help="Number of attention heads in every layer.",
         )
         tf_parse.add_argument(
+            "--dim_head",
+            type=int,
+            default=None,
+            help="Dimension of each attention head. If None, defaults to dim // heads.",
+        )
+        tf_parse.add_argument(
             "--emb_dropout", type=float, default=0.1, help="Embedding dropout."
         )
         tf_parse.add_argument(
@@ -222,8 +235,18 @@ class Parser(argparse.ArgumentParser):
         tf_parse.add_argument(
             "--attn_dropout", type=float, default=0.1, help="Post-attention dropout."
         )
-
-
+        tf_parse.add_argument(
+            "--local_attn_heads",
+            type=int,
+            default=None,
+            help="Number of local attention heads. If None, defaults to heads - 2.",
+        )
+        tf_parse.add_argument(
+            "--local_window_size",
+            type=int,
+            default=256,
+            help="Window size for local attention.",
+        )
 
         return tf_parse
 
@@ -323,6 +346,13 @@ class Parser(argparse.ArgumentParser):
             help="Number of epochs required without the validation loss reducing"
             "to stop training.",
         )
+        tr_parse.add_argument(
+            "--scheduler",
+            type=str,
+            default="cosine",
+            choices=["decay", "cosine"],
+            help="Learning rate scheduler to use.",
+        )
 
         return tr_parse
 
@@ -393,13 +423,12 @@ class Parser(argparse.ArgumentParser):
 
         return ms_parse
 
-    def parse_arguments(self, argv, configs=[]):
+    def parse_arguments(self, argv, defaults=[]):
+        model_ckpt_path = None
         # --- Config file loading ---
         # update default values (before --help is called)
-        model_dir = None
-        for conf in configs:
+        for conf in defaults:
             if conf.endswith(".tt") or conf.endswith(".rt"):
-
                 input_config = load_bundled_model(conf)
             else:
                 with open(conf, "r") as f:
@@ -407,22 +436,18 @@ class Parser(argparse.ArgumentParser):
                         input_config = json.load(f)
                     else:
                         input_config = yaml.safe_load(f)
-            if ("pretrained_model" in input_config.keys()) or (
-                "trained_model" in input_config.keys()
-            ):
-                model_dir = os.path.dirname(os.path.realpath(conf))
             self.set_defaults(**input_config)
 
         # if no arguments are passed, print help
         if len(argv) == 0:
             argv = ["--help"]
         args = self.parse_args(argv)
+
         # read passed config files
         for conf in args.conf:
             if conf.endswith(".tt") or conf.endswith(".rt"):
-                from .util_functions import load_bundled_model
-
                 input_config = load_bundled_model(conf)
+                model_ckpt_path = conf
             else:
                 with open(conf, "r") as f:
                     # Load config file
@@ -435,11 +460,6 @@ class Parser(argparse.ArgumentParser):
                         raise RuntimeError(
                             f"Failed to load config file '{conf}': {e}. Is this a valid YAML or JSON file?"
                         )
-
-            if ("pretrained_model" in input_config.keys()) or (
-                "trained_model" in input_config.keys()
-            ):
-                model_dir = os.path.dirname(os.path.realpath(conf))
             self.set_defaults(**input_config)
 
         # --- Config parameter parsing ---
@@ -448,7 +468,7 @@ class Parser(argparse.ArgumentParser):
             args.h5_path = f"{args.h5_path.split('.h5')[0].split('.hdf5')[0]}.h5"
         # override config file with bash inputs
         args = self.parse_args()
-        args.model_dir = model_dir
+        args.model_ckpt_path = model_ckpt_path
         args.missing_models = True
         # create output dir if non-existent
         if args.out_prefix:
@@ -580,11 +600,12 @@ class Parser(argparse.ArgumentParser):
             and (not args.data)
             and (not args.overwrite_models)
         ):
-            file = f"{args.out_prefix}_pretrain_params.yml"
+            file = f"{args.out_prefix}.ckpt.rt"
             if os.path.isfile(file):
                 args.missing_models = False
                 args = load_args(file, args)
                 args.folds = args.pretrained_model["folds"]
+                args.model_ckpt_path = file
 
         # TIS Transformer
         # Check if previously trained model exists or is called.
@@ -595,20 +616,31 @@ class Parser(argparse.ArgumentParser):
             and (self.tool == "tis_transformer")
             and (not args.overwrite_models)
         ):
-            file = f"{args.out_prefix}_params.yml"
-            # args.model takes precedence over args.trained_model or default output model
-            if args.model is not None:
-                path_str = "transcript_transformer.pretrained.tt_models"
-                args.model_dir = os.fspath(cast(os.PathLike, files(path_str)))
-                model_config = files(path_str).joinpath(TT_DICT[args.model])
-                args = load_args(os.fspath(cast(os.PathLike, model_config)), args)
-            # If output model exists and no other model is listed
-            elif os.path.isfile(file) and ("trained_model" not in args):
+            file = f"{args.out_prefix}.ckpt.tt"
+            if os.path.isfile(file):
                 args = load_args(file, args)
+                # list folds parameter directly in args
+                if "trained_model" in args:
+                    args.folds = args.trained_model["folds"]
+                args.model_ckpt_path = file
 
-            # list folds parameter directly in args
-            if "trained_model" in args:
-                args.folds = args.trained_model["folds"]
+        if args.local_attn_heads is None:
+            args.local_attn_heads = max(0, args.heads - 2)
 
-        print(args, end="\n\n")
+        if args.dim_head is None:
+            args.dim_head = args.dim // args.heads
+
+        # Flash attention compatibility
+        if not args.data:
+            assert args.dim % (args.heads * 8) == 0, (
+                f"Flash Attention requires head dimension (dim/heads) to be a multiple of 8 for optimal performance and RoPE compatibility."
+                f" Found dim={args.dim}, heads={args.heads} (head_dim={args.dim/args.heads})."
+                f" Please adjust 'dim' to a multiple of {args.heads * 8}."
+            )
+
+        # Print args without folds
+        args_copy = vars(args).copy()
+        for key in ["pretrained_model", "trained_model", "folds"]:
+            args_copy.pop(key, None)
+        print(args_copy, end="\n\n")
         return args

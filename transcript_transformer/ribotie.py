@@ -46,8 +46,7 @@ def parse_args():
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args()
-    # Too advanced for now, not documented
-    # parser.add_architecture_args()
+    parser.add_architecture_args()
     default_config = files("transcript_transformer.configs").joinpath("defaults.rt.yml")
     default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
@@ -101,6 +100,7 @@ def main():
             args.folds = find_optimal_folds(contig_lens, args.test_frac, args.val_frac)
 
     # --- Pre-training ---
+    # --- Pre-training ---
     if args.pretrain and args.missing_models:
         prtime("Pretraining model: training models on collection of all samples", "\n")
         args.transfer_checkpoint = None
@@ -144,14 +144,14 @@ def main():
             "patience": 1,
             "lr": 0.0008,
         }
-        save_bundled_model(f"{args.out_prefix}_pretrain.rt", save_dict)
+        save_bundled_model(f"{args.out_prefix}.ckpt.rt", save_dict)
         # Remove individual fold checkpoints
         for i in args.folds.keys():
             os.remove(f"{args.out_prefix}_pretrain_f{i}.rt.ckpt")
     elif not args.missing_models:
         prtime("Pretraining model: training models on collection of all samples", "\n")
         print(
-            f"\t -- Found '{args.out_prefix}_params.rt.yml', Skipping RiboTIE pre-training step",
+            f"\t -- Found '{args.out_prefix}.ckpt.rt', Skipping RiboTIE pre-training step",
         )
 
     # --- Fine-tuning Or Prediction ---
@@ -163,7 +163,7 @@ def main():
             args_set.grouped_ribo_ids = {group: ribo_ids}
             args_set.cond["grouped"] = {group: args.cond["grouped"][group]}
 
-            model_file = f"{args.out_prefix}_{group}_params.rt.yml"
+            model_file = f"{args.out_prefix}_{group}.ckpt.rt"
             result_file = f"{args.out_prefix}_{group}.npy"
             has_model_output = os.path.isfile(result_file)
             has_model_file = os.path.isfile(model_file)
@@ -235,7 +235,7 @@ def main():
                     "patience": 1,
                     "lr": 0.0008,
                 }
-                save_bundled_model(f"{args.out_prefix}_{group}.rt", save_dict)
+                save_bundled_model(f"{args.out_prefix}_{group}.ckpt.rt", save_dict)
                 # Remove individual fold checkpoints
                 for i in folds.keys():
                     os.remove(f"{args.out_prefix}_{group}_f{i}.rt.ckpt")

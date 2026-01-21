@@ -63,8 +63,7 @@ def parse_args():
     parser.add_training_args()
     parser.add_train_loading_args()
     parser.add_evaluation_args()
-    # Too advanced for now, not documented
-    # parser.add_architecture_args()
+    parser.add_architecture_args()
     default_config = files("transcript_transformer.configs").joinpath("defaults.tt.yml")
     default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
@@ -182,11 +181,7 @@ def main():
             prtime(f"Predicting samples — Fold {i} ...", "\n")
             predict(args_set, trainer=trainer, model=model)
         else:
-            print(args_set.transfer_checkpoint)
-            args_set.transfer_checkpoint = os.path.join(
-                args.model_dir, args_set.transfer_checkpoint
-            )
-            print(f"\t -- Loaded model: {args_set.transfer_checkpoint}...")
+            print(f"\t -- Loaded model: {args.model_ckpt_path}...")
             prtime(f"Predicting samples — Fold {i} ...", "\n")
             predict(args_set)
     if len(args.folds) > 0:
@@ -198,7 +193,8 @@ def main():
         if req_train:
             args.folds[0]["test"] = []
             save_dict = {"trained_model": {"folds": args.folds}}
-            save_bundled_model(f"{args.out_prefix}.tt", save_dict)
+            save_bundled_model(f"{args.out_prefix}.ckpt.tt", save_dict)
+            prtime(f"Bundled models saved to {args.out_prefix}.ckpt.tt", "\n")
             # Remove individual checkpoints to keep only the bundled one
             for i in args.folds.keys():
                 os.remove(f"{args.out_prefix}_f{i}.tt.ckpt")

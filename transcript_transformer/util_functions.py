@@ -7,6 +7,8 @@ from datetime import datetime
 from pyfaidx import Fasta
 from transcript_transformer import CDN_PROT_DICT, PROT_IDX_DICT, DNA_IDX_DICT
 
+from pdb import set_trace
+
 
 def construct_prot(seq):
     stop_cds = ["TAG", "TGA", "TAA"]
@@ -251,17 +253,20 @@ def save_bundled_model(out_path, save_dict):
     else:
         folds = {}
 
-    for i, fold in folds.items():
+    for fold_id, fold in folds.items():
         if "transfer_checkpoint" in fold:
-            ckpt_path = fold["transfer_checkpoint"]
+            ckpt_name = fold["transfer_checkpoint"]
+            ckpt_path = os.path.join(os.path.dirname(out_path), ckpt_name)
             if os.path.isfile(ckpt_path):
                 # Load the full checkpoint
                 checkpoint = torch.load(ckpt_path, map_location="cpu")
                 # Store it in the dict
                 fold["checkpoint_data"] = checkpoint
+                fold["transfer_checkpoint"] = None
                 # We can remove the path since it will be bundled
                 # But kept for backward compatibility if needed
-
+        # Save fold back into save_dict
+        folds[fold_id] = fold
     torch.save(save_dict, out_path)
 
 

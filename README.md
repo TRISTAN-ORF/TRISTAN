@@ -7,7 +7,7 @@
 [![GitHub license](https://img.shields.io/github/license/TRISTAN-ORF/transcript_transformer)](https://github.com/TRISTAN-ORF/transcript_transformer/blob/main/LICENSE.md)
 [![GitHub issues](https://img.shields.io/github/issues/TRISTAN-ORF/transcript_transformer)](https://github.com/TRISTAN-ORF/transcript_transformer/issues)
 [![GitHub stars](https://img.shields.io/github/stars/TRISTAN-ORF/transcript_transformer)](https://github.com/TRISTAN-ORF/transcript_transformer/stargazers)
-[![Documentation Status](https://readthedocs.org/projects/tristan-orf/badge/?version=latest)](https://tristan-orf.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://readthedocs.org/projects/transcript-transformer/badge/?version=latest)](https://tristan-orf.readthedocs.io/en/latest/?badge=latest)
 </div>
 
 **TRISTAN** (TRanslational Identification Suite using Transformer Networks for ANalysis) is a suite of tools for detecting translated Open Reading Frames (ORFs) in organisms through the analysis of sequence context and/or ribosome profiling (Ribo-seq) data.

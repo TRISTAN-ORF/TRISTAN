@@ -9,8 +9,44 @@ from rotary_embedding_torch import RotaryEmbedding
 
 
 # ==========================================
-# 1. Positional Embeddings
+# 1. Positional Embeddings & Loss Function
 # ==========================================
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, alpha=None, reduction="mean"):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        if isinstance(alpha, (float, int)):
+            self.alpha = torch.Tensor([alpha, 1 - alpha])
+        if isinstance(alpha, list):
+            self.alpha = torch.Tensor(alpha)
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        if input.ndim > 2:
+            input = input.view(input.size(0), input.size(1), -1)  # N,C,H,W => N,C,H*W
+            input = input.transpose(1, 2)  # N,C,H*W => N,H*W,C
+            input = input.contiguous().view(-1, input.size(2))  # N,H*W,C => N*H*W,C
+        target = target.view(-1, 1)
+
+        logpt = F.log_softmax(input, dim=1)
+        logpt = logpt.gather(1, target.long())
+        logpt = logpt.view(-1)
+        pt = logpt.exp()
+
+        if self.alpha is not None:
+            if self.alpha.type() != input.data.type():
+                self.alpha = self.alpha.type_as(input.data)
+            at = self.alpha.gather(0, target.data.view(-1).long())
+            logpt = logpt * at
+
+        loss = -1 * (1 - pt) ** self.gamma * logpt
+        if self.reduction == "mean":
+            return loss.mean()
+        else:
+            return loss.sum()
 
 
 class FixedPositionalEmbedding(nn.Module):
@@ -34,12 +70,20 @@ class FixedPositionalEmbedding(nn.Module):
 
 class HybridFlashBlock(nn.Module):
     def __init__(
-        self, dim, heads, dim_head, local_attn_heads=None, window_size=256, dropout=0.1
+        self,
+        dim,
+        heads,
+        dim_head,
+        local_attn_heads=None,
+        window_size=256,
+        ff_dropout=0.1,
+        attn_dropout=0.1,
     ):
         super().__init__()
         self.heads = heads
         self.dim_head = dim_head
         self.window_size = window_size
+        self.attn_dropout = attn_dropout
 
         # Default: If not specified, make all heads local except 2 (unless heads < 2)
         if local_attn_heads is None:
@@ -65,9 +109,9 @@ class HybridFlashBlock(nn.Module):
         self.ff = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.GELU(),
-            nn.Dropout(dropout),
+            nn.Dropout(ff_dropout),
             nn.Linear(dim * 4, dim),
-            nn.Dropout(dropout),
+            nn.Dropout(ff_dropout),
         )
 
     def forward(self, x, mask=None, rotary_emb=None, causal=False):
@@ -183,7 +227,7 @@ class HybridFlashBlock(nn.Module):
                     k_l,
                     v_l,
                     attn_mask=attn_mask_l,
-                    dropout_p=0.1 if self.training else 0.0,
+                    dropout_p=self.attn_dropout if self.training else 0.0,
                     is_causal=False,  # Local windows are dense (non-causal local)
                 )
 
@@ -223,7 +267,7 @@ class HybridFlashBlock(nn.Module):
                     k_g,
                     v_g,
                     attn_mask=attn_mask_g,
-                    dropout_p=0.1 if self.training else 0.0,
+                    dropout_p=self.attn_dropout if self.training else 0.0,
                     is_causal=is_sdpa_causal,
                 )
             outputs.append(out_g)
@@ -278,7 +322,9 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         mask_frac,
         rand_frac,
         metrics,
-        scheduler,
+        scheduler="decay",
+        loss_type="ce",
+        focal_gamma=2.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -310,7 +356,8 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                     dim_head=self.head_dim,
                     local_attn_heads=local_attn_heads,
                     window_size=local_window_size,
-                    dropout=attn_dropout,
+                    ff_dropout=ff_dropout,
+                    attn_dropout=attn_dropout,
                 )
                 for _ in range(depth)
             ]
@@ -333,7 +380,10 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                 self.mask_token = 4
         else:
             self.mlm = False
-            self.loss_fn = nn.CrossEntropyLoss()
+            if loss_type == "focal":
+                self.loss_fn = FocalLoss(gamma=focal_gamma, reduction="mean")
+            else:
+                self.loss_fn = nn.CrossEntropyLoss()
             pos_label = 2
             if "ROC" in metrics:
                 self.val_rocauc = tm.AUROC(task="binary")

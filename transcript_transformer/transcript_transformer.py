@@ -61,6 +61,8 @@ def train(args, test_model=True, enable_model_summary=True):
                 args.rand_frac,
                 args.metrics,
                 args.scheduler,
+                args.loss_type,
+                args.focal_gamma,
             )
             model.load_state_dict(args.checkpoint_data["state_dict"])
         else:
@@ -107,6 +109,8 @@ def train(args, test_model=True, enable_model_summary=True):
             args.rand_frac,
             args.metrics,
             args.scheduler,
+            args.loss_type,
+            args.focal_gamma,
         )
     tr_loader = h5pyDataModule(
         args.h5_path,
@@ -210,6 +214,8 @@ def predict(args, trainer=None, model=None):
                 args.rand_frac,
                 args.metrics,
                 args.scheduler,
+                args.loss_type,
+                args.focal_gamma,
             )
             model.load_state_dict(args.checkpoint_data["state_dict"])
             model.to(map_location)

@@ -353,6 +353,19 @@ class Parser(argparse.ArgumentParser):
             choices=["decay", "cosine"],
             help="Learning rate scheduler to use.",
         )
+        tr_parse.add_argument(
+            "--loss_type",
+            type=str,
+            default="focal",
+            choices=["ce", "focal"],
+            help="Loss function to use (CrossEntropy or Focal Loss).",
+        )
+        tr_parse.add_argument(
+            "--focal_gamma",
+            type=float,
+            default=2.0,
+            help="Gamma parameter for Focal Loss.",
+        )
 
         return tr_parse
 

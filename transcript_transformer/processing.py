@@ -721,13 +721,34 @@ def construct_output_table(
 
     # --- Filter CDS variants and custom filters ---
     # Custom filters
-    conds_xtr = [
-        pl.col("TTS_on_transcript") if exclude_invalid_TTS else pl.lit(True),
-        pl.col("start_codon").str.contains(start_codons),
-        pl.col("ORF_len") >= min_ORF_len,
-    ]
-    c_xtr = pl.lit(True).and_(*conds_xtr)
-    df = df.filter(c_xtr)
+    n_total = len(df)
+    n_before = n_total
+    if exclude_invalid_TTS:
+        df = df.filter(pl.col("TTS_on_transcript"))
+        n_after = len(df)
+        n_rem = n_before - n_after
+        prtime(
+            f"{n_rem} of {n_total} ({n_rem/n_total:.1%}) ORFs removed due to invalid TTS",
+            "\t",
+        )
+        n_before = n_after
+
+    df = df.filter(pl.col("start_codon").str.contains(start_codons))
+    n_after = len(df)
+    n_rem = n_before - n_after
+    prtime(
+        f"{n_rem} of {n_total} ({n_rem/n_total:.1%}) ORFs removed due to start codon filter",
+        "\t",
+    )
+    n_before = n_after
+
+    df = df.filter(pl.col("ORF_len") >= min_ORF_len)
+    n_after = len(df)
+    n_rem = n_before - n_after
+    prtime(
+        f"{n_rem} of {n_total} ({n_rem/n_total:.1%}) ORFs removed due to minimum ORF length filter",
+        "\t",
+    )
     # CDS variant filtering
     if len(df) > 0:
         df_filt = filter_CDS_variants(df)
@@ -812,6 +833,11 @@ def process_seq_preds(
 ):
     # Find indices above min_prob for each prediction
     mask = [np.where(pred > min_prob)[0] for pred in preds]
+    n_total = sum([len(m) for m in mask])
+
+    invalid_tts_count = 0
+    start_codon_count = 0
+    min_orf_len_count = 0
 
     rows = []
     for i, idxs in enumerate(mask):
@@ -823,21 +849,43 @@ def process_seq_preds(
             cond_1 = re.search(start_codons, start_codon)
             cond_2 = len(prot_seq) * 3 >= min_ORF_len
             cond_3 = has_stop or include_invalid_TTS
-            if cond_1 and cond_2 and cond_3:
-                rows.append(
-                    {
-                        "transcript_id": ids[i],
-                        "transcript_length": len(tr),
-                        "TIS_pos": idx + 1,
-                        "output": preds[i][idx],
-                        "start_codon": start_codon,
-                        "TTS_pos": TTS_pos,
-                        "stop_codon": stop_codon,
-                        "TTS_on_transcript": has_stop,
-                        "protein_length": len(prot_seq),
-                        "protein_sequence": prot_seq,
-                    }
-                )
+
+            if not cond_3:
+                invalid_tts_count += 1
+                continue
+            if not cond_1:
+                start_codon_count += 1
+                continue
+            if not cond_2:
+                min_orf_len_count += 1
+                continue
+
+            rows.append(
+                {
+                    "transcript_id": ids[i],
+                    "transcript_length": len(tr),
+                    "TIS_pos": idx + 1,
+                    "output": preds[i][idx],
+                    "start_codon": start_codon,
+                    "TTS_pos": TTS_pos,
+                    "stop_codon": stop_codon,
+                    "TTS_on_transcript": has_stop,
+                    "protein_length": len(prot_seq),
+                    "protein_sequence": prot_seq,
+                }
+            )
+    prtime(
+        f"{invalid_tts_count} of {n_total} ({invalid_tts_count/n_total:.1%}) ORFs removed due to invalid TTS",
+        "\t",
+    )
+    prtime(
+        f"{start_codon_count} of {n_total} ({start_codon_count/n_total:.1%}) ORFs removed due to start codon filter",
+        "\t",
+    )
+    prtime(
+        f"{min_orf_len_count} of {n_total} ({min_orf_len_count/n_total:.1%}) ORFs removed due to minimum ORF length filter",
+        "\t",
+    )
     return pl.DataFrame(
         rows,
         schema={

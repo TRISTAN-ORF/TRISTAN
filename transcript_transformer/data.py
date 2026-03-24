@@ -8,7 +8,6 @@ import numpy as np
 
 from scipy import sparse
 from tqdm import tqdm
-import biobear as bb
 import polars as pl
 
 import h5py
@@ -57,9 +56,6 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         DNA_seq = pyfaidx.Fasta(fa_path)
         gr = pr.read_gtf(gtf_path)
         gtf = pl.from_pandas(gr.df).rename(COMPAT_MAPPING)
-        # use biobear instead (does not work well)
-        # session = bb.connect()
-        # gtf = session.sql(f"SELECT * FROM gtf_scan('{gtf_path}')").to_polars()
         # import exon number as int (strings have wrong sortin (e.g. 10, 11, 2,...))
         gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
         db_tr = parse_transcriptome(gtf, DNA_seq)
@@ -127,15 +123,14 @@ def process_ribo_data(
     f.close()
     for sample_id, path in samples_to_process.items():
         prtime(f"Loading in {sample_id}...", "\n")
-        riboseq_data = parse_ribo_reads(path, read_lims, tr_ids, tr_lens, low_memory)
         try:
             if not parallel:
                 print(f"\t -- Saving data to {h5_path}...")
                 f = h5py.File(h5_path, "a")
             else:
-                path = h5_path.split(".h5")[0] + f"_{sample_id}.h5"
-                print(f"\t -- Saving data to {path}...")
-                f = h5py.File(path, "w")
+                path_h5 = h5_path.split(".h5")[0] + f"_{sample_id}.h5"
+                print(f"\t -- Saving data to {path_h5}...")
+                f = h5py.File(path_h5, "w")
                 f.create_group("transcript")
                 # Save tr_ids in parallel h5 files
                 max_char_len = tr_ids.str.len_chars().max()
@@ -148,14 +143,19 @@ def process_ribo_data(
                 del f[f"transcript/riboseq/{sample_id}"]
             f["transcript/riboseq"].create_group(sample_id)
             exp_grp = f[f"transcript/riboseq/{sample_id}"].create_group("5")
-            h5max.store_sparse(exp_grp, riboseq_data, format="csr")
-            num_reads = [s.sum() for s in riboseq_data]
+            
+            num_reads = parse_ribo_reads(path, read_lims, tr_ids, tr_lens, exp_grp, low_memory)
+            
             exp_grp.create_dataset("num_reads", data=np.array(num_reads).astype(int))
             exp_grp.create_dataset("metadata", data=read_lims)
             f.close()
         except Exception as error:
             print(error)
-            del f[f"transcript/riboseq/{sample_id}"]
+            print(traceback.format_exc())
+            if 'f' in locals() and sample_id in f["transcript/riboseq"].keys():
+                del f[f"transcript/riboseq/{sample_id}"]
+            if 'f' in locals():
+                f.close()
 
 
 def save_genome_to_h5(f, db):
@@ -403,184 +403,144 @@ def parse_transcriptome(gtf, DNA_seq):
     return db
 
 
-def aggregate_sam_file(path, read_lims, low_memory=False):
-    schema = {"column_3": pl.Utf8, "column_4": pl.Int32, "column_10": pl.Utf8}
-    columns = ["column_3", "column_4", "column_10"]
-    new_columns = ["transcript_id", "pos", "read"]
-    # Scan complete file in memory
-    lf = (
-        pl.scan_csv(
-            path,
-            has_header=False,
-            comment_prefix="@",
-            schema_overrides=schema,
-            low_memory=low_memory,
-            separator="\t",
-        )
-        .select(columns)
-        .rename({o: n for o, n in zip(columns, new_columns)})
-        # Cast position early if possible (assuming it's non-negative)
-        .with_columns(pl.col("pos").cast(pl.UInt32))
-    )
-    lf_agg = aggregate_reads(lf, read_lims)
-    return lf_agg
-
-
-def aggregate_bam_file(path, read_lims):
-    # Use biobear to load data
-    s = f"CREATE EXTERNAL TABLE test STORED AS BAM LOCATION '{path}'"
-    ctx = bb.connect()
-    ctx.sql(s)
-    s_2 = f"""
-    SELECT reference, start, sequence
-    FROM test
+def store_sparse_chunked(f, data, format="csr", overwrite=False, append=False):
     """
-    lf = (
-        ctx.sql(s_2)
-        .to_polars(lazy=True)
-        .rename({"reference": "transcript_id", "start": "pos", "sequence": "read"})
-        .select(["transcript_id", "pos", "read"])
-        .with_columns(pl.col("pos").cast(pl.UInt32))
-    )
-    lf_agg = aggregate_reads(lf, read_lims)
-    ctx.sql("DROP TABLE test")
-
-    return lf_agg
-
-
-def aggregate_reads(lf, read_lims):
-    print("\t -- Filtering on read lens...")
-    lf = lf.with_columns(pl.col("read").str.len_chars().alias("read_len"))
-    lf = lf.filter(
-        (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
-    )
-    print("\t -- Aggregating reads...")
-    lf_agg = lf.group_by(["transcript_id", "read_len", "pos"]).agg(
-        pl.col("read").count().alias("read_count").cast(pl.UInt32)
-    )
-
-    return lf_agg
-
-
-def parse_ribo_reads(path, read_lims, f_ids, f_lens, low_memory=False):
-    print(f"\t -- Reading and processing file: {path}...")
-    _, file_ext = os.path.splitext(path)
-
-    f_ids_series = pl.Series(f_ids, dtype=pl.Utf8)
-    f_lens_series = pl.Series(f_lens, dtype=pl.UInt32)
-
-    if file_ext == ".sam":
-        lf_agg = aggregate_sam_file(path, read_lims, low_memory)
-    elif file_ext == ".bam":
-        lf_agg = aggregate_bam_file(path, read_lims)
-    else:
-        raise TypeError(f"file extension {file_ext} not supported")
-
-    num_read_lens = read_lims[1] - read_lims[0]
-    tr_len_dict = {
-        i: l for i, l in zip(f_ids_series.to_list(), f_lens_series.to_list())
+    Append a list of matrices to an HDF5 group incrementally.
+    """
+    format_attr_dict = {
+        "csr": ["data", "indices", "indptr", "shape"],
     }
+    format_dict = {"csr": sparse.csr_matrix}
+    
+    if type(data) not in [list, np.ndarray]:
+        data = [data]
+        
+    if not data:
+        return
+        
+    transform = type(data[0]) != format_dict[format]
+    data_attr = {key: [] for key in format_attr_dict[format]}
+    
+    for sample in data:
+        if transform:
+            sample = format_dict[format](sample)
+        for attribute in data_attr.keys():
+            data_attr[attribute].append(np.array(getattr(sample, attribute)))
+            
+    for attribute in data_attr.keys():
+        if overwrite and attribute in f.keys() and not append:
+            del f[attribute]
+            
+        att_dtype = data_attr[attribute][0].dtype
+        att_lens = np.array([len(d) for d in data_attr[attribute]])
+        
+        # If append is True, resizing existing dataset
+        if append and attribute in f.keys():
+            ds = f[attribute]
+            curr_size = ds.shape[0]
+            add_size = len(data_attr[attribute])
+            ds.resize((curr_size + add_size,) + ds.shape[1:])
+            if (att_lens[0] == att_lens).all():
+                ds[curr_size:] = data_attr[attribute]
+            else:
+                for i, arr in enumerate(data_attr[attribute]):
+                    ds[curr_size + i] = arr
+        else:
+            # Create new resizable dataset
+            if (att_lens[0] == att_lens).all():
+                data_arr = np.array(data_attr[attribute])
+                max_shape = (None,) + data_arr.shape[1:]
+                f.create_dataset(attribute, data=data_arr, maxshape=max_shape)
+            else:
+                dt = h5py.vlen_dtype(att_dtype)
+                ds = f.create_dataset(attribute, shape=(len(data_attr[attribute]),), maxshape=(None,), dtype=dt)
+                for i, arr in enumerate(data_attr[attribute]):
+                    ds[i] = arr
+
+def parse_ribo_reads(path, read_lims, f_ids, f_lens, exp_grp, low_memory=False):
+    print(f"\t -- Reading and processing file: {path}...")
+    import pysam
+    _, file_ext = os.path.splitext(path)
+    
+    bam_path = path
+    temp_bam = False
+    
+    if file_ext == ".sam":
+        bam_path = path.replace(".sam", ".bam")
+        if not os.path.exists(bam_path):
+            print(f"\t -- Converting and sorting SAM to BAM ({bam_path})...")
+            pysam.sort("-o", bam_path, path)
+            temp_bam = True
+            
+    bai_path = bam_path + ".bai"
+    if not os.path.exists(bai_path):
+        try:
+            print(f"\t -- Indexing BAM... ({bai_path})")
+            pysam.index(bam_path)
+        except pysam.SamtoolsError:
+            sorted_bam = bam_path.replace(".bam", ".sorted.bam")
+            print(f"\t -- BAM not sorted. Sorting to {sorted_bam}...")
+            pysam.sort("-o", sorted_bam, bam_path)
+            pysam.index(sorted_bam)
+            if temp_bam:
+                os.remove(bam_path)
+            bam_path = sorted_bam
+            temp_bam = True
+
+    bam = pysam.AlignmentFile(bam_path, "rb")
+    num_read_lens = read_lims[1] - read_lims[0]
     read_len_dict = {
         read_len: i for i, read_len in enumerate(range(read_lims[0], read_lims[1]))
     }
-
-    print("\t -- Lazily filtering for relevant transcript IDs...")
-    lf_agg_filtered = lf_agg.filter(pl.col("transcript_id").is_in(f_ids_series))
-
-    # --- Prepare data structures ---
-    riboseq_data = {}
-    print(f"\t\t -- Pre-constructing {len(f_ids_series)} empty datasets...")
-    for tr_id, length in tqdm(
-        zip(f_ids_series.to_list(), f_lens_series.to_list()),
-        total=len(f_ids_series),
-        desc="Initializing matrices",
-    ):
-        riboseq_data[tr_id] = sparse.csr_matrix((num_read_lens, length), dtype=np.int32)
-
-    # --- Collect the results of the first aggregation (Memory Bottleneck Point) ---
-    print("\t -- Collecting filtered aggregated data (streaming)...")
-    df_agg = lf_agg_filtered.collect(streaming=True)
-    print(f"\t\t -- Collected filtered aggregated data: {df_agg.shape[0]} rows.")
-    print(
-        f"\t\t -- Collected DataFrame memory usage: {df_agg.estimated_size('mb'):.2f} MB"
-    )
-    del lf_agg_filtered
-
-    # --- Sort the collected data ---
-    if df_agg.height > 0:
-        print("\t -- Sorting aggregated data by transcript_id...")
-        df_agg_sorted = df_agg.sort("transcript_id")
-        del df_agg  # Release memory of the unsorted frame if sort was successful
-
-        print(f"\t -- Iterating over sorted groups...")
-        # Group by the sorted column; maintain_order=True improves performance after sort
-        grouped = df_agg_sorted.group_by("transcript_id", maintain_order=True)
-        num_groups = df_agg_sorted.n_unique("transcript_id")
-
-        for names, group_df in tqdm(
-            grouped, total=num_groups, desc="Processing transcripts"
-        ):
-            transcript_id = names[0]
-            # Get the expected length for this transcript
-            mtx_width = tr_len_dict.get(transcript_id)
-            mtx_shape = (num_read_lens, mtx_width)
-
-            # Extract relevant columns to NumPy arrays for processing
-            read_lens_np = group_df["read_len"].to_numpy()
-            pos_np = group_df["pos"].to_numpy()  # Assuming this is 1-based from SAM/BAM
-            num_reads_np = group_df["read_count"].to_numpy()
-
-            # --- Position Adjustment and Filtering ---
-            pos_np_0based = pos_np - 1  # Adjust if input `pos` is already 0-based
-            valid_pos_mask = (pos_np_0based >= 0) & (pos_np_0based < mtx_width)
-
-            if not valid_pos_mask.all():
-                read_lens_np = read_lens_np[valid_pos_mask]
-                pos_np_0based = pos_np_0based[valid_pos_mask]
-                num_reads_np = num_reads_np[valid_pos_mask]
-
-            # Create sparse matrix only if there's valid data remaining
-            if len(read_lens_np) > 0:
-                sp_mtx = create_sparse_matrix_from_arrays(
-                    read_lens_np, pos_np_0based, num_reads_np, mtx_shape, read_len_dict
-                )
-                riboseq_data[transcript_id] = sp_mtx
-
-        del df_agg_sorted
-
-    else:
-        print(
-            "\t -- No relevant aggregated data found after filtering. Only empty matrices created."
-        )
-
-    # --- Finalize output array ---
-    print("\t -- Finalizing output array...")
-    final_data_list = [riboseq_data[id_key] for id_key in f_ids_series.to_list()]
-    return np.array(final_data_list, dtype=object)
-
-
-def create_sparse_matrix_from_arrays(
-    read_lens_np, pos_np_0based, num_reads_np, mtx_shape, read_len_dict
-):
-    """
-    Creates a sparse matrix directly from NumPy arrays.
-    Assumes pos_np_0based is already 0-based.
-    """
-    if len(read_lens_np) == 0:
-        return sparse.csr_matrix(mtx_shape, dtype=np.int32)
-    try:
-        rows = [read_len_dict[read_len] for read_len in read_lens_np]
-    except KeyError as e:
-        raise ValueError(
-            f"Invalid read length {e} found in data, not in read_len_dict mapping. Check read_lims."
-        ) from e
-    cols = pos_np_0based
-    data = num_reads_np
-    sparse_matrix_coo = sparse.csr_matrix(
-        (data, (rows, cols)),
-        shape=mtx_shape,
-        dtype=np.int32,
-    )
-    # Convert to CSR and sum duplicates
-    sparse_matrix_csr = sparse_matrix_coo.tocsr()
-    return sparse_matrix_csr
+    
+    f_ids_list = f_ids.to_list()
+    f_lens_list = f_lens.to_list()
+    
+    CHUNK_SIZE = 40000
+    total_transcripts = len(f_ids_list)
+    num_reads = []
+    
+    pbar = tqdm(total=total_transcripts, desc="Processing Transcripts")
+    for chunk_start in range(0, total_transcripts, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, total_transcripts)
+        chunk_ids = f_ids_list[chunk_start:chunk_end]
+        chunk_lens = f_lens_list[chunk_start:chunk_end]
+        
+        chunk_matrices = []
+        for tr_id, tr_len in zip(chunk_ids, chunk_lens):
+            mtx_shape = (num_read_lens, tr_len)
+            rows = []
+            cols = []
+            
+            try:
+                for read in bam.fetch(tr_id):
+                    read_len = read.query_length
+                    if read_lims[0] <= read_len < read_lims[1]:
+                        try:
+                            rows.append(read_len_dict[read_len])
+                            # read.reference_start is 0-based
+                            cols.append(read.reference_start)
+                        except KeyError:
+                            pass
+            except ValueError:
+                # Missing from index
+                pass
+            
+            if len(rows) > 0:
+                data = np.ones(len(rows), dtype=np.int32)
+                sp_mtx = sparse.coo_matrix((data, (rows, cols)), shape=mtx_shape, dtype=np.int32)
+                sp_mtx.sum_duplicates() 
+                csr = sp_mtx.tocsr()
+                chunk_matrices.append(csr)
+                num_reads.append(csr.sum())
+            else:
+                chunk_matrices.append(sparse.csr_matrix(mtx_shape, dtype=np.int32))
+                num_reads.append(0)
+                
+        append = chunk_start > 0
+        store_sparse_chunked(exp_grp, chunk_matrices, overwrite=True, append=append)
+        pbar.update(chunk_end - chunk_start)
+        
+    pbar.close()
+    bam.close()
+    return num_reads

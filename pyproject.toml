@@ -32,6 +32,7 @@ dependencies = [
     "tensorboard >= 2.16.2",
     "torchmetrics >= 1.1.2",
     "local-attention == 1.7.1",
+    "rotary-embedding-torch",
     "h5py >= 3.11.0",
     "numpy >= 1.26.4",
     "scipy >= 1.13.0",

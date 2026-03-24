@@ -1,8 +1,8 @@
 # NEW MODEL
 lr : 0.00013
-max_memory : 30000
+max_memory : 180000
 scheduler : decay
-decay_rate : 0.94
+decay_rate : 0.95
 
 # input params
 use_seq : true
@@ -16,10 +16,10 @@ id_path : transcript_id
 prob_cutoff : 0.03
 # model architecture
 num_tokens: 8
-dim: 48
+dim: 64 
 depth: 8
-heads: 6
-dim_head: 16
+heads: 8
+dim_head: 24 
 ff_glu: false
 emb_dropout: 0.1
 ff_dropout: 0.1

@@ -6,8 +6,13 @@ import itertools
 import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+
+class HardNegativeMiningCallback(Callback):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if isinstance(outputs, dict) and "sample_losses" in outputs:
+            trainer.datamodule.update_weights(outputs["sample_idxs"], outputs["sample_losses"])
 
 from .models import TranscriptSeqRiboEmb
 from .transcript_loader import (
@@ -64,7 +69,7 @@ def train(args, test_model=True, enable_model_summary=True):
                 args.loss_type,
                 args.focal_gamma,
             )
-            model.load_state_dict(args.checkpoint_data["state_dict"])
+            model.load_state_dict(args.checkpoint_data["state_dict"], strict=False)
         else:
             model = TranscriptSeqRiboEmb.load_from_checkpoint(
                 args.transfer_checkpoint,
@@ -132,6 +137,9 @@ def train(args, test_model=True, enable_model_summary=True):
         leaky_frac=args.leaky_frac,
         collate_fn=collate_fn,
         parallel=args.parallel,
+        sample_frac=args.sample_frac,
+        exploration_frac=args.exploration_frac,
+        warmup_epochs=args.warmup_epochs,
     )
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
@@ -143,19 +151,28 @@ def train(args, test_model=True, enable_model_summary=True):
     tb_logger = pl.loggers.TensorBoardLogger(
         ".", os.path.join(log_dir, os.path.basename(args.out_prefix))
     )
-
+    
+    # Build callbacks list
+    callbacks = [
+        checkpoint_callback,
+        EarlyStopping(monitor="val_loss", mode="min", patience=args.patience),
+    ]
+    
+    # Add Hard Negative Mining callback if enabled
+    if args.sample_frac < 1.0:
+        callbacks.append(HardNegativeMiningCallback())
+    
     trainer = pl.Trainer(
         accelerator=args.accelerator,
         strategy=args.strategy,
         devices=args.devices,
         precision=args.precision,
+        num_sanity_val_steps=0,
+        log_every_n_steps=1,
         max_epochs=args.max_epochs,
         reload_dataloaders_every_n_epochs=1,
         enable_model_summary=enable_model_summary,
-        callbacks=[
-            checkpoint_callback,
-            EarlyStopping(monitor="val_loss", mode="min", patience=args.patience),
-        ],
+        callbacks=callbacks,
         logger=tb_logger if not args.debug else False,
         enable_checkpointing=not args.debug,
     )
@@ -217,7 +234,7 @@ def predict(args, trainer=None, model=None):
                 args.loss_type,
                 args.focal_gamma,
             )
-            model.load_state_dict(args.checkpoint_data["state_dict"])
+            model.load_state_dict(args.checkpoint_data["state_dict"], strict=False)
             model.to(map_location)
         else:
             model = TranscriptSeqRiboEmb.load_from_checkpoint(

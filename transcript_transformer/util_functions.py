@@ -462,6 +462,13 @@ def find_distant_exon_coord(ref_coord, distance, strand, exons):
 
 
 def get_str2str_idx_map(source, dest):
+    """Get mapping from source string to destination string indices.
+    Args:
+        source (list): list of source strings
+        dest (list): list of destination strings
+    Returns:
+        np.array: array of indices mapping source to dest
+    """
     xsorted = np.argsort(dest)
     return xsorted[np.searchsorted(dest[xsorted], source)]
 

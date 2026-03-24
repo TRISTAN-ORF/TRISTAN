@@ -71,6 +71,8 @@ def collate_fn(batch):
             x_dict[k] = torch.LongTensor(arr)
 
     x_dict.update({"x_id": batch[0], "y": y_b})
+    if len(batch) > 3:
+        x_dict["sample_idxs"] = torch.LongTensor(batch[3])
 
     return x_dict
 
@@ -165,8 +167,14 @@ class h5pyDataModule(pl.LightningDataModule):
         leaky_frac=0.05,
         collate_fn=collate_fn,
         parallel=False,
+        sample_frac=1.0,
+        exploration_frac=0.2,
+        warmup_epochs=0,
     ):
         super().__init__()
+        self.sample_frac = sample_frac
+        self.exploration_frac = exploration_frac
+        self.warmup_epochs = warmup_epochs
         self.grouped_ribo_ids = grouped_ribo_ids
         self.offsets = offsets
         self.use_seq = use_seq
@@ -202,6 +210,8 @@ class h5pyDataModule(pl.LightningDataModule):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
         self.seqn_list = np.array(f[self.seqn_path])
         self.transcript_lens = np.array(f["transcript_len"])
+        if not hasattr(self, "weights"):
+            self.weights = np.ones(len(self.seqn_list), dtype=np.float32)
         f.file.close()
         # evaluate conditions
         global_mask, global_masks, group_masks = self.evaluate_masks()
@@ -239,11 +249,16 @@ class h5pyDataModule(pl.LightningDataModule):
             # train set
             seqn_mask = np.isin(self.seqn_list, np.array(self.seqns["train"]))
             mask = np.logical_and(global_mask, seqn_mask)
-            self.tr_idx, self.tr_len, self.tr_idx_adj, self.train_groups = (
+            # Store full training pool for dynamic sampling
+            self.train_pool_idx, self.train_pool_len, self.tr_idx_adj, self.train_groups = (
                 self.prepare_sets(mask, group_masks)
             )
-            print(f"\t -- Training set transcript count: {len(self.tr_idx)}")
-            assert len(self.tr_idx) > 0, "No transcripts in training data"
+            # Initialize working set (will be updated in get_dataloader)
+            self.tr_idx = self.train_pool_idx
+            self.tr_len = self.train_pool_len
+            
+            print(f"\t -- Training pool transcript count: {len(self.train_pool_idx)}")
+            assert len(self.train_pool_idx) > 0, "No transcripts in training data"
             # validation set
             seqn_mask = np.isin(self.seqn_list, self.seqns["val"])
             if self.strict_validation:
@@ -390,8 +405,84 @@ class h5pyDataModule(pl.LightningDataModule):
         lens = np.hstack(len_set)
         idxs = np.where(mask_all)[0]
         sort_idxs = np.argsort(lens)
-
         return idxs[sort_idxs], lens[sort_idxs], len(mask), idx_group_order
+
+    def balance_sets(self, indices, lengths):
+        """
+        Samples transcripts based on loss-weighted sampling.
+        No distinction between "positive" and "negative" transcripts - all are sampled 
+        based on their average loss (hard examples preferred) with some random exploration.
+        
+        Args:
+            indices: Array of transcript indices to sample from
+            lengths: Array of transcript lengths (aligned with indices)
+            
+        Returns:
+            Tuple of (sampled_indices, sampled_lengths) sorted by length
+        """
+        # Calculate how many samples to take (sample_frac of the pool)
+        total_available = len(indices)
+        n_samples = int(total_available * self.sample_frac)
+        
+        if n_samples >= total_available:
+            print(f"\t    - Sample fraction {self.sample_frac} >= 1.0, using all {total_available} transcripts.")
+            return indices, lengths
+        
+        print(f"\t    - Sampling {n_samples}/{total_available} transcripts ({self.sample_frac*100:.1f}%)")
+        
+        # Get weights for all candidates
+        weights = self.weights[indices]
+        
+        # Split budget between Exploration (Random) and Exploitation (Weighted)
+        n_random = int(n_samples * self.exploration_frac)
+        n_weighted = n_samples - n_random
+        
+        print(f"\t      ({n_weighted} weighted, {n_random} random)")
+        
+        # 1. Random Sampling (Exploration)
+        random_idxs = np.random.choice(len(indices), size=n_random, replace=False)
+        sampled_random = indices[random_idxs]
+        
+        # 2. Weighted Sampling (Exploitation)
+        # Normalize weights to probabilities
+        w_sum = weights.sum()
+        if w_sum <= 0:
+            # Fallback to uniform if all weights are zero
+            probs = None
+        else:
+            probs = weights / w_sum
+        
+        weighted_idxs = np.random.choice(len(indices), size=n_weighted, replace=False, p=probs)
+        sampled_weighted = indices[weighted_idxs]
+        
+        # Combine and ensure uniqueness
+        sampled_indices = np.unique(np.concatenate([sampled_random, sampled_weighted]))
+        
+        # Get lengths for sampled transcripts
+        sampled_lengths = self.transcript_lens[sampled_indices]
+        
+        # Sort by length for efficient bucketing
+        sort_order = np.argsort(sampled_lengths)
+        
+        return sampled_indices[sort_order], sampled_lengths[sort_order]
+
+    def update_weights(self, indices, losses):
+        """
+        Updates the sampling weights for the given indices based on observed losses.
+        indices: list/array of absolute H5 indices
+        losses: list/array of loss values
+        """
+        # Ensure indices and losses are numpy arrays or convert
+        if isinstance(indices, torch.Tensor):
+            indices = indices.cpu().numpy()
+        if isinstance(losses, torch.Tensor):
+            losses = losses.cpu().numpy()
+            
+        # Update weights (simple replacement or moving average?)
+        # User said: "tracks which transcripts have the highest loss (average)"
+        # Simple replacement is standard for OHEM (use latest known loss).
+        # We add epsilon to ensure non-zero prob.
+        self.weights[indices] = losses + 1e-6
 
     def get_dataloader(self, stage):
         """
@@ -415,7 +506,21 @@ class h5pyDataModule(pl.LightningDataModule):
             - The DataLoader is configured with a batch size of 1.
         """
         if stage == "train":
-            indices, lengths = local_shuffle(self.tr_idx, self.tr_len)
+            # Check if in warmup period (use full dataset)
+            current_epoch = self.trainer.current_epoch if hasattr(self, 'trainer') and self.trainer else 0
+            in_warmup = current_epoch < self.warmup_epochs
+            
+            # Dynamic Sampling per epoch (unless in warmup)
+            if self.sample_frac < 1.0 and not in_warmup:
+                print(f"[TRAIN - Epoch {current_epoch}] Weighted sampling: sample_frac={self.sample_frac}, exploration_frac={self.exploration_frac}")
+                indices, lengths = self.balance_sets(self.train_pool_idx, self.train_pool_len)
+            else:
+                if in_warmup:
+                    print(f"[TRAIN - Epoch {current_epoch}] Warmup phase: using full dataset ({self.warmup_epochs} warmup epochs)")
+                indices, lengths = self.train_pool_idx, self.train_pool_len
+            
+            # Apply local shuffle
+            indices, lengths = local_shuffle(indices, lengths)
             idx_group_order = self.train_groups
             idx_adj = self.tr_idx_adj
         elif stage == "val":
@@ -558,9 +663,10 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         x_ids = []
         xs = []
         ys = []
+        sample_idxs = []
         # For every dataloader index in batch
         for dl_idx in self.batches[index]:
-            # batches are stacked across all samples
+             # batches are stacked across all samples
             # get adjusted set_idx if multiple datasets are used
             set_idx = int(dl_idx % self.idx_adj)
             group = self.idx_group_order[dl_idx // self.idx_adj]
@@ -578,8 +684,9 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             )
             xs.append(x_dict)
             ys.append(self.f[self.y_path][set_idx])
+            sample_idxs.append(set_idx)
 
-        return [x_ids, xs, ys]
+        return [x_ids, xs, ys, sample_idxs]
 
     def get_seq_data(self, idx):
         return self.f["seq"][idx]

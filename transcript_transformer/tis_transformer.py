@@ -160,6 +160,7 @@ def main():
             )
         else:
             print(f"\t -- Using existing TIS Transformer model parameters")
+        args.folds = args.trained_model["folds"]
         req_train = False
     else:
         print(f"\t -- Training TIS Transformer model parameters from scratch")

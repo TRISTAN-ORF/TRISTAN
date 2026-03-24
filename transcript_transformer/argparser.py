@@ -170,7 +170,7 @@ class Parser(argparse.ArgumentParser):
         comp_parse.add_argument(
             "--max_memory",
             type=int,
-            default=30000,
+            default=120000,
             help="Value (GPU vRAM) used to bucket batches based on rough estimates. "
             "Reduce this setting if running out of memory.",
         )
@@ -309,14 +309,39 @@ class Parser(argparse.ArgumentParser):
         dl_parse.add_argument(
             "--max_seq_len",
             type=int,
-            default=30000,
+            default=100000,
             help="Maximum sequence length of transcripts. Can be necessary to prevent GPU OOM errors.",
         )
         dl_parse.add_argument(
             "--max_transcripts_per_batch",
             type=int,
-            default=2000,
+            default=3000,
             help="Maximum of transcripts per batch.",
+        )
+        dl_parse.add_argument(
+            "--sample_frac",
+            type=float,
+            default=1.0,
+            help="Fraction of training transcripts to sample per epoch (0.0-1.0). "
+            "Uses loss-weighted sampling to prefer hard examples. "
+            "Example: 0.5 samples 50%% of transcripts each epoch, weighted by their loss.",
+        )
+        dl_parse.add_argument(
+            "--exploration_frac",
+            type=float,
+            default=0.2,
+            help="Fraction of samples selected purely at random during weighted sampling "
+            "(exploration) rather than based on high loss (exploitation). "
+            "Only used if --sample_frac < 1.0.",
+        )
+        dl_parse.add_argument(
+            "--warmup_epochs",
+            type=int,
+            default=0,
+            help="Number of initial epochs to use full dataset (sample_frac=1.0) before "
+            "switching to weighted sampling. This ensures all transcripts are seen at least once "
+            "before hard example mining begins. Recommended: Set to ceil(1.0/sample_frac) to guarantee "
+            "full coverage. Example: sample_frac=0.5 → warmup_epochs=2",
         )
 
         return dl_parse

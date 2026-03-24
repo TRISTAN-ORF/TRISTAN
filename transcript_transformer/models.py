@@ -45,8 +45,10 @@ class FocalLoss(nn.Module):
         loss = -1 * (1 - pt) ** self.gamma * logpt
         if self.reduction == "mean":
             return loss.mean()
-        else:
+        elif self.reduction == "sum":
             return loss.sum()
+        else:
+            return loss
 
 
 class FixedPositionalEmbedding(nn.Module):
@@ -56,7 +58,7 @@ class FixedPositionalEmbedding(nn.Module):
         position = torch.arange(0, max_seq_len, dtype=torch.float)
         sinusoid_inp = torch.einsum("i,j->ij", position, inv_freq)
         emb = torch.cat((sinusoid_inp.sin(), sinusoid_inp.cos()), dim=-1)
-        self.register_buffer("emb", emb)
+        self.register_buffer("emb", emb, persistent=False)
 
     def forward(self, x):
         return self.emb[None, : x.shape[1], :].to(x)
@@ -141,10 +143,23 @@ class HybridFlashBlock(nn.Module):
         # Reshape to (B, Heads, N_pad, Dim_Head)
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.heads), qkv)
 
+
         # 3. Apply RoPE Globally
         if rotary_emb is not None:
+            # Force FP32 for RoPE to prevent overflow with long sequences (80k+ tokens)
+            # RoPE uses complex trigonometric operations that overflow in FP16
+            q_dtype = q.dtype
+            k_dtype = k.dtype
+            
+            q = q.float() if q.dtype == torch.float16 else q
+            k = k.float() if k.dtype == torch.float16 else k
+            
             q = rotary_emb.rotate_queries_or_keys(q)
             k = rotary_emb.rotate_queries_or_keys(k)
+            
+            # Keep Q and K in FP32 - don't cast back to prevent downstream overflow
+            # V can stay in original dtype since it doesn't go through RoPE
+
 
         # 4. Split Heads
         if self.local_attn_heads > 0 and self.global_heads > 0:
@@ -215,6 +230,10 @@ class HybridFlashBlock(nn.Module):
             # Flash Attention on Windows with fallback
             # Q: (Batch*, H, W, D)
             # K, V: (Batch*, H, 3*W, D)
+            # Note: Q and K are already in FP32 from RoPE, V may be FP16
+            # Cast V to FP32 to match Q and K
+            v_l_compute = v_l.float() if v_l.dtype == torch.float16 else v_l
+            
             with torch.nn.attention.sdpa_kernel(
                 [
                     torch.nn.attention.SDPBackend.FLASH_ATTENTION,
@@ -225,11 +244,12 @@ class HybridFlashBlock(nn.Module):
                 out_l = F.scaled_dot_product_attention(
                     q_l,
                     k_l,
-                    v_l,
+                    v_l_compute,
                     attn_mask=attn_mask_l,
                     dropout_p=self.attn_dropout if self.training else 0.0,
-                    is_causal=False,  # Local windows are dense (non-causal local)
+                    is_causal=False,
                 )
+            # Output stays in FP32
 
             # Reshape Back
             out_l = rearrange(out_l, "(b nw) h w d -> b h (nw w) d", b=B)
@@ -255,6 +275,9 @@ class HybridFlashBlock(nn.Module):
             else:
                 is_sdpa_causal = causal
 
+            # Q and K are already in FP32 from RoPE, cast V to match
+            v_g_compute = v_g.float() if v_g.dtype == torch.float16 else v_g
+            
             with torch.nn.attention.sdpa_kernel(
                 [
                     torch.nn.attention.SDPBackend.FLASH_ATTENTION,
@@ -265,11 +288,12 @@ class HybridFlashBlock(nn.Module):
                 out_g = F.scaled_dot_product_attention(
                     q_g,
                     k_g,
-                    v_g,
+                    v_g_compute,
                     attn_mask=attn_mask_g,
                     dropout_p=self.attn_dropout if self.training else 0.0,
                     is_causal=is_sdpa_causal,
                 )
+            # Output stays in FP32
             outputs.append(out_g)
 
         # 5. Concatenate Results
@@ -285,6 +309,9 @@ class HybridFlashBlock(nn.Module):
         if pad_len > 0:
             out = out[:, :N, :]
 
+        # Force FP32 for long sequences to prevent overflow in mixed precision
+        # Autocast may try to convert to FP16, but attention outputs can be too large
+        out = out.float() if out.dtype == torch.float16 else out
         x = x + self.to_out(out)
 
         # 8. Feed Forward
@@ -381,9 +408,9 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         else:
             self.mlm = False
             if loss_type == "focal":
-                self.loss_fn = FocalLoss(gamma=focal_gamma, reduction="mean")
+                self.loss_fn = FocalLoss(gamma=focal_gamma, reduction="none")
             else:
-                self.loss_fn = nn.CrossEntropyLoss()
+                self.loss_fn = nn.CrossEntropyLoss(reduction="none")
             pos_label = 2
             if "ROC" in metrics:
                 self.val_rocauc = tm.AUROC(task="binary")
@@ -427,6 +454,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         # 2. Embedding Logic
         x = self.parse_embeddings(batch)
 
+
         if self.mlm:
             dist = torch.empty(batch["y"].shape, device=self.device).uniform_(0, 1)
             y_mask = torch.logical_and(dist > self.hparams.mask_c, y_mask)
@@ -440,21 +468,42 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             y_true = batch["y"][y_mask].view(-1)
 
         # 3. Add Absolute Position & Dropout
-        x = self.dropout(x + self.pos_emb(x))
+        pos = self.pos_emb(x)
+
+        x = x + pos
+        x = self.dropout(x)
+
 
         # 4. Transformer Layers (Hybrid)
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             x = layer(
                 x, mask=x_mask, rotary_emb=self.rotary_emb, causal=self.hparams.causal
             )
+
 
         # 5. Classification Head
         x = x[torch.logical_and(x_mask, y_mask)]
         x = x.view(-1, self.hparams.dim)
         x = self.activation(self.ff_1(x))
+
         x = self.ff_2(x)
 
+
         return x.float(), y_true, y_mask
+
+    def half(self):
+        """
+        Convert model to FP16, but keep rotary embeddings in FP32.
+        RoPE uses position indices that overflow FP16's max value (~65k) for long sequences (80k+ tokens).
+        """
+        # Convert all parameters to FP16
+        super().half()
+        
+        # Keep rotary embeddings in FP32 to prevent overflow
+        self.rotary_emb.float()
+        
+        return self
+
 
     def on_load_checkpoint(self, checkpoint):
         state_dict = checkpoint["state_dict"]
@@ -462,18 +511,10 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             for key in ["ff_2.weight", "ff_2.bias", "ff_1.weight", "ff_1.bias"]:
                 state_dict.pop(key)
             checkpoint["mlm"] = False
-        # Unconditionally restore the fixed positional embedding from the current model
-        state_dict["pos_emb.emb"] = self.pos_emb.emb
         checkpoint["state_dict"] = state_dict
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["mlm"] = self.mlm
-        # We don't need to save fixed positional embeddings
-        # They are registered buffers but we want to exclude them to save space
-        if "state_dict" in checkpoint:
-            keys_to_remove = [k for k in checkpoint["state_dict"].keys() if "pos_emb.emb" in k]
-            for key in keys_to_remove:
-                del checkpoint["state_dict"][key]
 
     # --- Helper Methods (Preserved from your original) ---
 
@@ -553,13 +594,41 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         y_hat, y_true, y_mask = self(batch)
+        # loss is per-token (N_tokens,)
         loss = self.loss_fn(y_hat, y_true)
-        self.log("train_loss", loss, sync_dist=True, batch_size=len(y_true))
-        return loss
+        
+        # Calculate per-transcript loss for Hard Negative Mining
+        # Split flat loss back into transcripts based on y_mask counts
+        # Note: y_mask is (batch, seq_len)
+        counts = y_mask.sum(dim=1).cpu()
+        # Handle case where some transcripts might have 0 valid tokens? (e.g. all masked/ignore)
+        # But y_mask.sum() > 0 usually.
+        
+        if "sample_idxs" in batch: 
+            # Only do this expensive split if we are tracking weights
+            # splits needs list of ints
+            loss_splits = torch.split(loss, counts.tolist())
+            # Mean loss per transcript
+            sample_losses = torch.stack([l.mean() for l in loss_splits])
+            
+            # Main optimization objective
+            train_loss = loss.mean()
+            self.log("train_loss", train_loss, sync_dist=True, batch_size=len(y_true))
+            
+            return {
+                "loss": train_loss,
+                "sample_losses": sample_losses.detach(),
+                "sample_idxs": batch["sample_idxs"]
+            }
+        else:
+            train_loss = loss.mean()
+            self.log("train_loss", train_loss, sync_dist=True, batch_size=len(y_true))
+            return train_loss
 
     def validation_step(self, batch, batch_idx):
         y_hat, y_true, y_mask = self(batch, eval=True)
-        loss = self.loss_fn(y_hat, y_true)
+        loss = self.loss_fn(y_hat, y_true).mean()
+
         self.log("val_loss", loss, sync_dist=True, batch_size=len(y_true))
 
         if not self.mlm:
@@ -570,6 +639,10 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                 self.val_prauc(probs, y_true)
         return loss
 
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        x, y_true, _ = self(batch, eval=True)
+        return x, y_true, batch.get("x_id", [])
+
     def test_step(
         self,
         batch,
@@ -577,7 +650,8 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
     ):
         y_hat, y_true, _ = self(batch)
 
-        self.log("test_loss", self.loss(y_hat, y_true), batch_size=len(y_true))
+        self.log("test_loss", self.loss_fn(y_hat, y_true).mean(), batch_size=len(y_true))
+
         if hasattr(self, "test_prauc"):
             self.test_prauc(F.softmax(y_hat, dim=1)[:, 1], y_true)
             self.log(

@@ -165,7 +165,7 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
         reads_entropy=(
             pl.col("reads_in_ORF").map_elements(
                 lambda x: entropy(x, np.full(len(x), 1) / len(x)),
-                return_dtype=pl.Float32,
+                return_dtype=pl.Float64,
             )
         ),
     )

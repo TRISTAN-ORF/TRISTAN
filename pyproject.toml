@@ -41,6 +41,7 @@ dependencies = [
     "h5max >= 0.3.2",
     "polars >= 1.28",
     "tqdm >= 4.66.2",
+    "pysam >= 0.22.0",
     "pyfaidx >= 0.8.1.1",
     "pyranges >= 0.1.4"
 ]

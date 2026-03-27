@@ -498,7 +498,7 @@ def parse_ribo_reads(path, read_lims, f_ids, f_lens, exp_grp, low_memory=False):
     f_ids_list = f_ids.to_list()
     f_lens_list = f_lens.to_list()
     
-    CHUNK_SIZE = 40000
+    CHUNK_SIZE = 50000
     total_transcripts = len(f_ids_list)
     num_reads = []
     

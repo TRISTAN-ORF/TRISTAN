@@ -101,6 +101,26 @@ def test_sequence_predicting():
 
 
 # RiboTIE
+def test_rt_exon_number():
+    remove_if_exists(["dbs/rt_exon_number.h5"])
+
+    command = [
+        "ribotie",
+        "configs/rt_exon_number.yml",
+    ]
+
+    result = subprocess.run(command, check=True, text=True, capture_output=True)
+    file_path = Path("dbs/rt_exon_number.h5")
+    assert file_path.exists(), "HDF5 file was not created"
+    f = h5py.File(file_path, "r")["transcript"]
+    assert "riboseq" in f.keys(), "HDF5 file does not contain 'ribo' group"
+    assert (
+        len(f["riboseq/sample_1/5"].keys()) > 3
+    ), "HDF5 file does not contain expected keys"
+    assert (
+        len(f["riboseq/sample_1/5/data"]) > 0
+    ), "HDF5 file does not contain 'data' entries"
+
 def test_rt_sam_data_loading():
     remove_if_exists(["dbs/rt_sam_loading.h5"])
 

@@ -2,6 +2,7 @@ import os
 import shutil
 import yaml
 import numpy as np
+import polars as pl
 import heapq
 from datetime import datetime
 from pyfaidx import Fasta
@@ -32,16 +33,10 @@ def construct_prot(seq):
     return string, has_stop, stop_codon
 
 
-def derive_exon_number():
-    # Parse the transcript ID from the "attribute" column
-    # Adjust the parsing based on the specific formatting within your GTF file
-    # Example assumes something like: 'transcript_id "some_id";'
-    get_transcript_id = pl.col("attribute").str.extract(r'transcript_id "([^"]+)"', 1)
-    exons_df = exons_df.with_columns(transcript_id=get_transcript_id)
-
+def derive_exon_number(exons_df):
     # Group by transcript and strand, then sort and enumerate exon numbers
     exons_numbered_df = exons_df.sort(["transcript_id", "start"]).with_columns(
-        exon_number=pl.col("transcript_id").cumcount().over(["transcript_id", "strand"])
+        exon_number=pl.col("transcript_id").cum_count().over(["transcript_id", "strand"])
     )
 
     # Depending on strand, adjust the exon number appropriately
@@ -54,6 +49,8 @@ def derive_exon_number():
             pl.col("exon_number") + 1
         )  # If you ever need reverse order, adjust logic
     )
+
+    return exons_numbered_df
 
 
 def DNA2vec(dna_seq, seq_dict=DNA_IDX_DICT):

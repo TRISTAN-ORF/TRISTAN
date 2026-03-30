@@ -21,6 +21,7 @@ from .util_functions import (
     prot2vec,
     check_genomic_order,
     prtime,
+    derive_exon_number
 )
 from transcript_transformer import (
     REQ_HEADERS,
@@ -59,6 +60,8 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         # pyranges converts GTF 1-based Start to 0-based; restore to 1-based GTF convention
         gtf = gtf.with_columns(pl.col("start") + 1)
         # import exon number as int (strings have wrong sortin (e.g. 10, 11, 2,...))
+        if "exon_number" not in gtf.columns:
+            gtf = derive_exon_number(gtf)
         gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
         db_tr = parse_transcriptome(gtf, DNA_seq)
         db_gtf = parse_genome(gtf)

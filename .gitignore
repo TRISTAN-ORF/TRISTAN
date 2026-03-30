@@ -12,6 +12,19 @@
 models/
 tests/
 
+# Allow committed test fixtures in tests/data (override ignores above)
+!tests/
+!tests/data/
+!tests/data/**
+!tests/config/
+!tests/config/**
+!tests/configs/
+!tests/configs/**
+
+# Still ignore generated test outputs
+tests/out/**
+tests/lightning_logs/**
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

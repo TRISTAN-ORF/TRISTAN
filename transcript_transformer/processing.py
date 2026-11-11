@@ -148,7 +148,11 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
         reads_5UTR=(pl.col("reads").list.slice(0, pl.col("TIS_idx")).list.sum()),
         reads_3UTR=(
             pl.when(pl.col("TTS_idx") != -1)
-            .then(pl.col("reads").list.slice(pl.col("TTS_idx")).list.sum())
+            .then(
+                pl.col("reads")
+                .list.slice(pl.col("TTS_idx"), pl.col("reads").list.len())
+                .list.sum()
+            )
             .otherwise(pl.lit(0))
         ),
         reads_skew=(
@@ -442,7 +446,7 @@ def construct_output_table(
                     )
                 )
             )
-            .explode("corrects")
+            .explode("corrects", empty_as_null=True, keep_nulls=True)
             .with_columns(corrects=pl.col("corrects") * 3 - pl.col("upstr_cut"))
             .group_by(pl.exclude("corrects"))
             .all()

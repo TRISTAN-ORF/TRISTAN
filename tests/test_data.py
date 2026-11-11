@@ -33,7 +33,7 @@ def test_transcript_content(assembly):
         np.testing.assert_array_equal(tr["exon_idxs"][minus], [0, 8, 8, 60])
         assert tr["canonical_TIS_coord"][minus] == 74
         assert tr["canonical_TTS_coord"][minus] == 49
-        assert vec2DNA(tr["seq"][noncoding]).startswith("NNNATGCCCAAATAA")
+        assert vec2DNA(tr["seq"][noncoding]).startswith("NNNCTGCCCAAATAA")
         assert len(tr["CDS_coords"][noncoding]) == 0
         assert len(tr["canonical_protein_seq"][noncoding]) == 0
         for i in range(len(ids)):

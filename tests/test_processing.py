@@ -43,7 +43,7 @@ def test_orf_results(predictions, include_nonstop):
     expected = {
         "plus": (7, 22, 7, 22, 15, "MKPGF", "annotated CDS"),
         "minus": (7, 22, 74, 49, 15, "MKPGF", "annotated CDS"),
-        "noncoding": (4, 13, 4, 13, 9, "MPK", "lncRNA-ORF"),
+        "noncoding": (4, 13, 4, 13, 9, "LPK", "lncRNA-ORF"),
     }
     if include_nonstop:
         expected["nonstop"] = (4, 0, 4, -1, 60, "M" + "K" * 19, "annotated CDS")

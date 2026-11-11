@@ -6,7 +6,8 @@
 - `minus`: the same transcript sequence on the negative strand, split over two
   exons. Its ATG crosses the exon boundary. Genomic TIS/LTS/TTS are 74/50/49.
 - `noncoding`: a lowercase, N-containing lncRNA without an annotated CDS, but with
-  a short potential ORF encoding MPK.
+  a CTG-starting potential ORF encoding LPK. There is no nearby ATG, so correction
+  must retain the original non-canonical start rather than drop the ORF.
 - `nonstop`: an annotated CDS without a stop codon on the transcript.
 - `silent`: a transcript with neither alignment records nor positive predictions.
 

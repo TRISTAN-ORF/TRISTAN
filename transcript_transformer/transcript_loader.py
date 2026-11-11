@@ -197,6 +197,13 @@ class h5pyDataModule(pl.LightningDataModule):
         self.leaky_frac = leaky_frac
         self.collate_fn = collate_fn
         self.parallel = parallel
+        self.datasets = {}
+
+    def teardown(self, stage=None):
+        # Release read handles before predictions are written back to the database.
+        for dataset in self.datasets.values():
+            dataset.close_hdf5()
+        self.datasets.clear()
 
     def setup(self, stage=None):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
@@ -440,19 +447,22 @@ class h5pyDataModule(pl.LightningDataModule):
             self.max_transcripts_per_batch,
             stage if stage != "predict" else "test",
         )
+        if stage in self.datasets:
+            self.datasets[stage].close_hdf5()
+        self.datasets[stage] = h5pyDatasetBatches(
+            self.h5_path,
+            self.y_path,
+            self.tr_id_path,
+            self.use_seq,
+            self.grouped_ribo_ids,
+            self.offsets,
+            idx_adj,
+            batches,
+            idx_group_order,
+            self.parallel,
+        )
         return DataLoader(
-            h5pyDatasetBatches(
-                self.h5_path,
-                self.y_path,
-                self.tr_id_path,
-                self.use_seq,
-                self.grouped_ribo_ids,
-                self.offsets,
-                idx_adj,
-                batches,
-                idx_group_order,
-                self.parallel,
-            ),
+            self.datasets[stage],
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
             shuffle=(stage == "train"),
@@ -546,10 +556,13 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         self.f = h5py.File(self.h5_path, "r")["transcript"]
 
     def close_hdf5(self):
-        if self.parallel:
+        if self.parallel and hasattr(self, "r"):
             for id in self.r.keys():
                 self.r[id].file.close()
-        self.f.file.close()
+            del self.r
+        if hasattr(self, "f"):
+            self.f.file.close()
+            del self.f
 
     def __getitem__(self, index):
         if not hasattr(self, "f"):

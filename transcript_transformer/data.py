@@ -188,14 +188,18 @@ def save_transcriptome_to_h5(f, db):
         if db[key].dtype == pl.String:
             array = [a if a != None else "" for a in db[key]]
             max_char_len = db[key].str.len_chars().max()
-            if (max_char_len is not None) & (max_char_len > 0):
+            if max_char_len is not None and max_char_len > 0:
                 grp.create_dataset(key, data=array, dtype=f"<S{max_char_len}")
             else:
                 continue
         elif key in ["seq", "tis", "canonical_protein_seq"]:
-            grp.create_dataset(key, data=db[key], dtype=dt8)
+            grp.create_dataset(
+                key, data=db[key].cast(pl.List(pl.Int8)).to_numpy(), dtype=dt8
+            )
         elif key in ["exon_idxs", "exon_coords", "CDS_idxs", "CDS_coords"]:
-            grp.create_dataset(key, data=np.array(db[key], dtype=object), dtype=dt)
+            grp.create_dataset(
+                key, data=db[key].cast(pl.List(pl.Int64)).to_numpy(), dtype=dt
+            )
         else:
             grp.create_dataset(key, data=db[key])
 

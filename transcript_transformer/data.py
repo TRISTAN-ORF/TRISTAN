@@ -54,7 +54,7 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         f.close()
     else:
         DNA_seq = pyfaidx.Fasta(fa_path)
-        gr = pr.read_gtf(gtf_path)
+        gr = pr.read_gtf(gtf_path, duplicate_attr=True)
         gtf = pl.from_pandas(gr.df).rename(COMPAT_MAPPING)
         # pyranges converts GTF 1-based Start to 0-based; restore to 1-based GTF convention
         gtf = gtf.with_columns(pl.col("start") + 1)

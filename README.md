@@ -126,6 +126,26 @@ If you use TRISTAN in your research, please cite the relevant papers:
 
 Contributions are welcome! Please feel free to open an issue or submit a pull request.
 
+### Running the tests
+
+From a checkout, install the test dependencies and run:
+
+```bash
+pip install -e '.[test]'
+python -m pytest tests -q
+```
+
+The tests run on CPU and write databases, indexes and predictions to temporary
+directories. The short training checks use reduced models and transcript lengths;
+published human, mouse and RiboTIE checkpoints are checked separately against
+reference prediction scores. Input/output checks cover both strands, spliced
+transcripts, repeated GTF tags, non-coding transcripts, missing stop codons,
+SAM/BAM read counts, grouped samples and empty results. See `tests/data/README.md`
+for the small input examples and reference-score provenance.
+
+Performer and local-attention remain pinned to the versions used by the saved
+models. Do not upgrade these independently as part of routine dependency updates.
+
 ## 📄 License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.

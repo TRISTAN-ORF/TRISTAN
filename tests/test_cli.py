@@ -3,12 +3,52 @@ import pytest
 from itertools import product
 import subprocess
 import h5py
+import numpy as np
+import polars as pl
 from pathlib import Path
+import shutil
+import sys
+import yaml
+
+
+@pytest.fixture(scope="module")
+def cli_workspace(tmp_path_factory):
+    source = Path(__file__).parent
+    workspace = tmp_path_factory.mktemp("cli")
+    shutil.copytree(source / "data", workspace / "data")
+    shutil.copytree(source / "configs", workspace / "configs")
+    (workspace / "dbs").mkdir()
+    (workspace / "out").mkdir()
+    for path in (workspace / "configs").glob("*.yml"):
+        config = yaml.safe_load(path.read_text())
+        config.update(
+            accelerator="cpu", devices=1, num_workers=0, cores=2,
+            max_seq_len=1000, max_memory=5000, metrics=[],
+            cond=None,
+        )
+        if path.stem.startswith("rt_"):
+            # Length-limited fixtures can otherwise lose every sample in a fold.
+            config["cond"] = {"ribo": {"num_reads": "x >= 0"}}
+        if path.stem in ["tt_training", "rt_pretraining"]:
+            # Training completion must not depend on randomly initialized scores;
+            # fixed-prediction tests check the scientific output separately.
+            config.update(
+                dim=12, depth=1, heads=2, local_attn_heads=1,
+                dim_head=8, nb_features=8, local_window_size=16,
+                prob_cutoff=1.0,
+            )
+        path.write_text(yaml.safe_dump(config))
+    return workspace
 
 
 @pytest.fixture(autouse=True)
-def setup_module():
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+def setup_module(monkeypatch, cli_workspace):
+    monkeypatch.chdir(cli_workspace)
+    monkeypatch.setenv(
+        "PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"]
+    )
+    monkeypatch.setenv("OMP_NUM_THREADS", "2")
+    monkeypatch.setenv("MKL_NUM_THREADS", "2")
 
 
 def remove_if_exists(file_paths):
@@ -55,7 +95,7 @@ def test_sequence_data_loading():
         "configs/tt_loading.yml",
     ]
 
-    result = subprocess.run(command, check=True, text=True, capture_output=True)
+    result = subprocess.run(command, check=True, text=True)
     file_path = Path("dbs/tt_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
 
@@ -77,7 +117,7 @@ def test_sequence_training():
         "configs/tt_training.yml",
     ]
 
-    subprocess.run(command, check=True, text=True, capture_output=True)
+    subprocess.run(command, check=True, text=True)
 
     assert_if_exists(files)
 
@@ -95,9 +135,27 @@ def test_sequence_predicting():
         "data/tt_params.yml",
     ]
 
-    subprocess.run(command, check=True, text=True, capture_output=True)
+    subprocess.run(command, check=True, text=True)
 
     assert_if_exists(files)
+
+
+def test_fasta_predicting():
+    subprocess.run(
+        [
+            "tis_transformer", "--model", "human", "--fasta", "data/features.fa",
+            "--out_prefix", "out/fasta", "--accelerator", "cpu", "--num_workers", "0",
+            "--max_seq_len", "1000", "--prob_cutoff", "0", "--min_ORF_len", "9",
+            "--include_invalid_TTS",
+        ],
+        check=True, text=True,
+    )
+    predictions = np.load("out/fasta.npy", allow_pickle=True)
+    assert len(predictions) == 5
+    result = pl.read_csv("out/fasta.csv")
+    plus = result.filter(pl.col("transcript_id") == "plus")
+    assert plus["TIS_pos"].to_list() == [7]
+    assert plus["protein_sequence"].to_list() == ["MKPGF"]
 
 
 # RiboTIE
@@ -109,7 +167,7 @@ def test_rt_sam_data_loading():
         "configs/rt_sam_loading.yml",
     ]
 
-    result = subprocess.run(command, check=True, text=True, capture_output=True)
+    result = subprocess.run(command, check=True, text=True)
     file_path = Path("dbs/rt_sam_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
     f = h5py.File(file_path, "r")["transcript"]
@@ -130,7 +188,7 @@ def test_rt_bam_data_loading():
         "configs/rt_bam_loading.yml",
     ]
 
-    subprocess.run(command, check=True, text=True, capture_output=True)
+    subprocess.run(command, check=True, text=True)
     file_path = Path("dbs/rt_bam_loading.h5")
     assert file_path.exists(), "HDF5 file was not created"
     f = h5py.File(file_path, "r")["transcript"]
@@ -158,7 +216,7 @@ def test_rt_pretraining():
         "ribotie",
         "configs/rt_pretraining.yml",
     ]
-    subprocess.run(command, check=True, text=True, capture_output=True)
+    subprocess.run(command, check=True, text=True)
 
     assert_if_exists(files)
 
@@ -177,6 +235,6 @@ def test_rt_training():
         "ribotie",
         "configs/rt_training.yml",
     ]
-    subprocess.run(command, check=True, text=True, capture_output=True)
+    subprocess.run(command, check=True, text=True)
 
     assert_if_exists(files)

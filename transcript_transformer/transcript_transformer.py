@@ -111,9 +111,9 @@ def train(args, test_model=True, enable_model_summary=True):
     )
     if args.debug:
         trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
+            accelerator=args.accelerator,
+            strategy=args.strategy,
+            devices=args.devices,
             max_epochs=args.max_epochs,
             reload_dataloaders_every_n_epochs=1,
             enable_model_summary=enable_model_summary,
@@ -125,9 +125,9 @@ def train(args, test_model=True, enable_model_summary=True):
         )
     else:
         trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
+            accelerator=args.accelerator,
+            strategy=args.strategy,
+            devices=args.devices,
             max_epochs=args.max_epochs,
             reload_dataloaders_every_n_epochs=1,
             enable_model_summary=enable_model_summary,
@@ -153,9 +153,9 @@ def predict(args, trainer=None, model=None):
 
     if trainer is None:
         trainer = pl.Trainer(
-            args.accelerator,
-            args.strategy,
-            args.devices,
+            accelerator=args.accelerator,
+            strategy=args.strategy,
+            devices=args.devices,
             enable_checkpointing=False,
             logger=None,
         )

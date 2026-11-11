@@ -31,15 +31,15 @@ dependencies = [
     "pytorch-lightning >= 2.2.1",
     "tensorboard >= 2.16.2",
     "torchmetrics >= 1.1.2",
-    "performer-pytorch == 1.1.4",
-    "local-attention == 1.7.1",
+    "performer-pytorch == 1.1.4", # Pinned for compatibility with saved models.
+    "local-attention == 1.7.1", # Pinned for compatibility with saved models.
     "h5py >= 3.11.0",
     "numpy >= 1.26.4",
     "scipy >= 1.13.0",
     "pandas >= 2.2.2",
     "pyarrow >= 18.0.0",
     "h5max >= 0.3.2",
-    "polars >= 1.28",
+    "polars >= 2.0, < 3",
     "tqdm >= 4.66.2",
     "pysam >= 0.22.0",
     "pyfaidx >= 0.8.1.1",
@@ -49,6 +49,9 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/TRISTAN-ORF/TRISTAN"
 "Bug Tracker" = "https://github.com/TRISTAN-ORF/TRISTAN/issues" # Optional: good to add
+
+[project.optional-dependencies]
+test = ["pytest >= 8"]
 
 [project.scripts]
 ribotie = "transcript_transformer.ribotie:main"
@@ -62,4 +65,3 @@ exclude = [
 
 [tool.setuptools.package-data]
 #"transcript_transformer" = []
-

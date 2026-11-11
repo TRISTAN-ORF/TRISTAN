@@ -60,7 +60,10 @@ def eval_overlap(ORF_id, CDS_exon_start, CDS_exon_end, ORF_exon_start, ORF_exon_
         )
         .group_by("ORF_id")
         .agg(
-            pl.col("overlap").sum(), pl.col("ORF_coords_no_CDS").flatten().drop_nulls()
+            pl.col("overlap").sum(),
+            pl.col("ORF_coords_no_CDS")
+            .list.explode(keep_nulls=False, empty_as_null=False)
+            .drop_nulls(),
         )
     )
     if len(df) > 0:
@@ -175,8 +178,8 @@ def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
 def parse_CDS_overlap(df, df_CDS):
     # detect CDS variant information
     df = df.with_columns(
-        has_CDS_TIS=(pl.col("TIS_coord").is_in(df_CDS["canonical_TIS_coord"])),
-        has_CDS_TTS=(pl.col("LTS_coord").is_in(df_CDS["canonical_LTS_coord"])),
+        has_CDS_TIS=(pl.col("TIS_coord").is_in(df_CDS["canonical_TIS_coord"].implode())),
+        has_CDS_TTS=(pl.col("LTS_coord").is_in(df_CDS["canonical_LTS_coord"].implode())),
     )
     sel_cols = [
         "ORF_id",
@@ -596,6 +599,7 @@ def construct_output_table(
         df_out.write_csv(f"{out_prefix}.redundant.csv")
         df_out.write_csv(f"{out_prefix}.csv")
         df_out.write_csv(f"{out_prefix}.novel.csv")
+        f.file.close()
         print(f"\t !-> The positive set is empty!")
         return df_out, df_out, df_out
 

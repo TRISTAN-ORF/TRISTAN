@@ -803,7 +803,7 @@ def filter_CDS_variants(df):
 
     filter_suffix = ""
     df_filts = []
-    for _, df_grp in df.group_by("TIS_coord"):
+    for _, df_grp in df.group_by("seqname", "strand", "TIS_coord"):
         df_filt = df_grp.filter(
             # If annotated CDS then annotated CDS
             pl.when(c_1.any()).then(c_1)

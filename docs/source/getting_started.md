@@ -19,26 +19,13 @@ The package `transcript-transformer` incorporates the functionality of TIS Trans
 
 ## 🛠️ Installation
 
-`PyTorch` is used as the deep learning library. Follow the instructions [here](https://pytorch.org/get-started/locally/) to install `PyTorch` first. A GPU is recommended for large datasets; CPU execution is available with `--accelerator cpu`.
+`PyTorch` is used as the deep learning library. Follow the instructions [here](https://pytorch.org/get-started/locally/) to install `PyTorch` first. GPU support is necessary.
 
 After installing `PyTorch`, run
 
 ```bash
 pip install transcript_transformer
 ```
-
-The next minor release requires Polars 2.x, including its Python 3.15 compatibility
-fix. If no h5py wheel is available for your Python version, install h5py from
-conda-forge or provide the HDF5 development libraries before installing TRISTAN.
-For example, a Python 3.15 environment can be prepared with:
-
-```bash
-conda create -n tristan -c conda-forge python=3.15 h5py pip
-conda activate tristan
-```
-
-Then install PyTorch and TRISTAN as above. The pinned Performer and local-attention
-versions must be retained for compatibility with the published models.
 
 ## 📖 Quick Start
 
